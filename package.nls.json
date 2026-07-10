@@ -1,0 +1,18 @@
+{
+  "extension.description": "Open or attach to tmux sessions named after the current workspace folder, in a dedicated terminal view in the Secondary Side Bar.",
+  "view.terminal.name": "Terminal",
+  "command.openSession": "Switch Session",
+  "command.newSession": "New Session",
+  "command.newSessionWithProfile": "New Session With Profile...",
+  "command.openProfileSettings": "Configure Profiles...",
+  "command.killCurrentSession": "Kill Current Session",
+  "command.toggleSidebar": "Toggle Session List",
+  "command.openSettings": "Open Settings",
+  "command.openSpecificSession": "Open Specific Session",
+  "config.terminal.fontFamily": "Font family for the Tmux terminal view. Leave empty to use the editor's font family.",
+  "config.terminal.fontSize": "Font size (px) for the Tmux terminal view. Leave unset to match the editor's font size.",
+  "config.profiles": "Commands offered by the `⌄` dropdown next to `+` in the Tmux view's toolbar. Each profile runs as the tmux session's own process, so quitting it ends the session.\n\nThese are merged over the built-in profiles (`Claude Code`, `Codex`, `Gemini`, `Cursor`, `Grok`). Set a key to `null` to hide a built-in one, or add your own key to define a new profile:\n\n```json\n\"tmuxOpener.profiles\": {\n  \"Gemini\": null,\n  \"Claude Code\": { \"command\": \"claude --continue\" },\n  \"Build\": { \"command\": \"npm run watch\", \"sessionSuffix\": \"build\" }\n}\n```",
+  "config.profiles.command": "Shell command run as the session's process, e.g. \"claude\".",
+  "config.profiles.description": "Text shown beside the profile in the picker. Defaults to the command.",
+  "config.profiles.sessionSuffix": "Session-name suffix, as in \"<workspace>-<suffix>\". Defaults to a slug of the profile name."
+}

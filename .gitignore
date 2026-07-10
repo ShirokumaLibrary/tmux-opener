@@ -1,0 +1,10 @@
+out/
+dist/
+node_modules/
+*.vsix
+.vscode-test/
+.claude/settings.local.json
+tmp/
+tmp/*
+media/xterm/
+media/codicons/

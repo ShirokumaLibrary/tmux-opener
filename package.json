@@ -1,0 +1,222 @@
+{
+  "name": "tmux-opener",
+  "displayName": "Tmux Opener",
+  "description": "%extension.description%",
+  "l10n": "./l10n",
+  "version": "0.0.1",
+  "publisher": "shirokuma-library",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShirokumaLibrary/tmux-opener.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ShirokumaLibrary/tmux-opener/issues"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "icon": "media/tmux-logo.png",
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tmux-opener.openSession",
+        "title": "%command.openSession%",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.newSession",
+        "title": "%command.newSession%",
+        "category": "Tmux",
+        "icon": "$(add)"
+      },
+      {
+        "command": "tmux-opener.newSessionWithProfile",
+        "title": "%command.newSessionWithProfile%",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.newSession.claudeCode",
+        "title": "Claude Code",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.newSession.codex",
+        "title": "Codex",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.newSession.gemini",
+        "title": "Gemini",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.newSession.cursor",
+        "title": "Cursor",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.newSession.grok",
+        "title": "Grok",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.openProfileSettings",
+        "title": "%command.openProfileSettings%",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.killCurrentSession",
+        "title": "%command.killCurrentSession%",
+        "category": "Tmux",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "tmux-opener.toggleSidebar",
+        "title": "%command.toggleSidebar%",
+        "category": "Tmux",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "tmux-opener.openSettings",
+        "title": "%command.openSettings%",
+        "category": "Tmux",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "tmux-opener.openSpecificSession",
+        "title": "%command.openSpecificSession%",
+        "category": "Tmux"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "tmuxOpener",
+          "title": "Tmux",
+          "icon": "media/tmux-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "tmuxOpener": [
+        {
+          "id": "tmuxOpener.terminal",
+          "name": "%view.terminal.name%",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "tmux-opener.openSpecificSession",
+          "when": "false"
+        },
+        {
+          "command": "tmux-opener.newSession.claudeCode",
+          "when": "!tmuxOpener.profileHidden.claudeCode"
+        },
+        {
+          "command": "tmux-opener.newSession.codex",
+          "when": "!tmuxOpener.profileHidden.codex"
+        },
+        {
+          "command": "tmux-opener.newSession.gemini",
+          "when": "!tmuxOpener.profileHidden.gemini"
+        },
+        {
+          "command": "tmux-opener.newSession.cursor",
+          "when": "!tmuxOpener.profileHidden.cursor"
+        },
+        {
+          "command": "tmux-opener.newSession.grok",
+          "when": "!tmuxOpener.profileHidden.grok"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tmux Opener",
+      "properties": {
+        "tmuxOpener.terminal.fontFamily": {
+          "type": "string",
+          "default": "",
+          "description": "%config.terminal.fontFamily%"
+        },
+        "tmuxOpener.terminal.fontSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 6,
+          "maximum": 40,
+          "description": "%config.terminal.fontSize%"
+        },
+        "tmuxOpener.profiles": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "%config.profiles%",
+          "additionalProperties": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "%config.profiles.command%"
+              },
+              "description": {
+                "type": "string",
+                "description": "%config.profiles.description%"
+              },
+              "sessionSuffix": {
+                "type": "string",
+                "description": "%config.profiles.sessionSuffix%"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node scripts/esbuild.js && node scripts/copy-webview-assets.js",
+    "watch": "node scripts/esbuild.js --watch",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "package": "node scripts/esbuild.js --production && node scripts/copy-webview-assets.js",
+    "vsix": "mkdir -p out && vsce package --dependencies --out out/"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.94.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/codicons": "^0.0.45",
+    "@vscode/vsce": "^3.9.2",
+    "@xterm/addon-fit": "0.12.0-beta.288",
+    "@xterm/addon-search": "0.17.0-beta.288",
+    "@xterm/addon-unicode11": "0.10.0-beta.288",
+    "@xterm/addon-web-links": "0.13.0-beta.288",
+    "@xterm/addon-webgl": "0.20.0-beta.287",
+    "@xterm/xterm": "6.1.0-beta.288",
+    "esbuild": "^0.21.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.0"
+  }
+}

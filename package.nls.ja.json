@@ -1,0 +1,18 @@
+{
+  "extension.description": "ワークスペースフォルダー名の tmux セッションを、セカンダリサイドバーの専用ターミナルビューで開く・アタッチする。",
+  "view.terminal.name": "ターミナル",
+  "command.openSession": "セッションを切り替える",
+  "command.newSession": "新しいセッション",
+  "command.newSessionWithProfile": "プロファイルを指定して新しいセッション...",
+  "command.openProfileSettings": "プロファイルを設定...",
+  "command.killCurrentSession": "現在のセッションを終了する",
+  "command.toggleSidebar": "セッション一覧の表示を切り替える",
+  "command.openSettings": "設定を開く",
+  "command.openSpecificSession": "指定したセッションを開く",
+  "config.terminal.fontFamily": "Tmux ターミナルビューのフォント。空にするとエディターのフォントを使います。",
+  "config.terminal.fontSize": "Tmux ターミナルビューのフォントサイズ (px)。未設定ならエディターのフォントサイズに合わせます。",
+  "config.profiles": "Tmux ビューのツールバーで、`+` の隣の `⌄` から選べるコマンド。プロファイルは tmux セッションのプロセスそのものとして起動するので、終了するとセッションも終わります。\n\n組み込みプロファイル (`Claude Code`, `Codex`, `Gemini`, `Cursor`, `Grok`) にこの設定が上書きされます。キーに `null` を指定すると組み込みを非表示にでき、新しいキーを足せば独自のプロファイルを定義できます:\n\n```json\n\"tmuxOpener.profiles\": {\n  \"Gemini\": null,\n  \"Claude Code\": { \"command\": \"claude --continue\" },\n  \"Build\": { \"command\": \"npm run watch\", \"sessionSuffix\": \"build\" }\n}\n```",
+  "config.profiles.command": "セッションのプロセスとして実行するシェルコマンド (例: \"claude\")。",
+  "config.profiles.description": "ピッカーでプロファイル名の横に表示する説明。省略するとコマンドを表示します。",
+  "config.profiles.sessionSuffix": "セッション名の接尾辞 (\"<ワークスペース>-<接尾辞>\" の形)。省略するとプロファイル名から生成します。"
+}
