@@ -8,3 +8,7 @@ tmp/
 tmp/*
 media/xterm/
 media/codicons/
+# shirokuma-flow work scratch (review output etc.); config.yaml and rules/ are tracked.
+.shirokuma/tmp/
+.shirokuma/github/
+.shirokuma/logs/

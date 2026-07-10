@@ -18,6 +18,7 @@ const groups = [
       ['node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js', 'addon-unicode11.js'],
       ['node_modules/@xterm/addon-search/lib/addon-search.js', 'addon-search.js'],
       ['node_modules/@xterm/addon-webgl/lib/addon-webgl.js', 'addon-webgl.js'],
+      ['node_modules/@xterm/addon-clipboard/lib/addon-clipboard.js', 'addon-clipboard.js'],
     ],
   },
   {

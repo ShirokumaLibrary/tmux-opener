@@ -29,6 +29,9 @@ Open the **Tmux** view from the Secondary Side Bar (the right-hand panel).
 - Opening the view attaches to the topmost session. Killing a session — or
   quitting it with `exit` — moves you to the next one.
 - `Ctrl`/`Cmd`+`F` opens a find bar. URLs in the output are clickable.
+- Copying works from tmux's own copy-mode (via OSC 52), and from a terminal
+  selection made with `Shift`+drag or `Option`+drag. `Ctrl`/`Cmd`+`C` copies
+  when text is selected, and passes through as `SIGINT` when it isn't.
 
 The same actions are in the Command Palette under **Tmux:**.
 

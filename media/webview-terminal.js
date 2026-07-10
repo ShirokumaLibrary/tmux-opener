@@ -108,6 +108,11 @@
         theme: buildXtermTheme(),
         scrollback: 1000,
         altClickMovesCursor: true,
+        // With tmux in mouse mode the pty consumes drags, so xterm never forms
+        // a selection. Shift+drag always bypasses mouse reporting; this makes
+        // Option+drag do the same on macOS, matching VS Code's default for
+        // terminal.integrated.macOptionClickForcesSelection.
+        macOptionClickForcesSelection: true,
         minimumContrastRatio: 4.5,
         rescaleOverlappingGlyphs: true,
         scrollOnEraseInDisplay: true,
@@ -148,6 +153,30 @@
         term.unicode.activeVersion = '11';
       } catch (err) {
         console.error('Failed to activate unicode11', err);
+      }
+
+      // OSC 52 is how a program inside the pty — tmux's copy-mode, vim, a
+      // remote shell — asks the terminal to put text on the system clipboard.
+      // tmux's own paste buffer is invisible to the host, so without this the
+      // copied text never leaves tmux. VS Code loads the same addon
+      // (xtermTerminal.ts) with its own provider, for the same reason.
+      try {
+        term.loadAddon(
+          new ClipboardAddon.ClipboardAddon(undefined, {
+            // The addon's default provider calls navigator.clipboard directly,
+            // which a webview may refuse and which in any case needs a user
+            // gesture an escape sequence from the pty does not have.
+            writeText: (_type, text) => {
+              copyText(text);
+              return Promise.resolve();
+            },
+            // Answering a read request would hand the clipboard to whatever is
+            // running in the terminal. VS Code allows it; we don't.
+            readText: () => Promise.resolve(''),
+          }),
+        );
+      } catch (err) {
+        console.error('Failed to load ClipboardAddon', err);
       }
 
       // Without an accelerated renderer addon, xterm.js falls back to
@@ -429,6 +458,29 @@
     });
   }
 
+  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+
+  // Clipboard access from a webview is gated on transient user activation and
+  // on permissions the host may withhold. The extension host has neither
+  // problem, so both directions go through it.
+  function copyText(text) {
+    if (!text) {
+      return false;
+    }
+    vscodeApi.postMessage({ type: 'copy', text });
+    return true;
+  }
+
+  function copySelection() {
+    return copyText(term.getSelection());
+  }
+  // Exposed for debugging via the webview's DevTools console only.
+  window.__tmuxCopy = copySelection;
+
+  function pasteFromClipboard() {
+    vscodeApi.postMessage({ type: 'paste' });
+  }
+
   let findbar, findInput, findNext, findPrev, findClose;
   function openFind() {
     findbar.classList.add('visible');
@@ -469,22 +521,30 @@
     findPrev.addEventListener('click', () => runSearch(false));
     findClose.addEventListener('click', closeFind);
 
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
-        openFind();
-        return false;
-      }
-      if (e.type === 'keydown' && e.key === 'Escape' && findbar.classList.contains('visible')) {
-        closeFind();
-        return false;
-      }
-      return true;
-    });
+    // xterm.js allows only one custom key handler, so every shortcut lives
+    // here. The decision logic is in webview-keymap.js (loaded as a separate
+    // <script> that sets window.TmuxKeymap) so it can be unit-tested without a
+    // browser; this closure only supplies the injected effects and live state.
+    term.attachCustomKeyEventHandler((e) =>
+      TmuxKeymap.decideTerminalKeyEvent(e, {
+        isMac,
+        hasSelection: term.hasSelection(),
+        findbarVisible: findbar.classList.contains('visible'),
+        openFind,
+        closeFind,
+        copySelection,
+        clearSelection: () => term.clearSelection(),
+        preventDefault: () => e.preventDefault(),
+        paste: pasteFromClipboard,
+      }),
+    );
   }
 
   function handleReadyMessage(msg) {
     if (msg.type === 'output') {
       term.write(msg.data);
+    } else if (msg.type === 'pasteText') {
+      term.paste(msg.text);
     } else if (msg.type === 'clear') {
       term.reset();
     } else if (msg.type === 'info') {

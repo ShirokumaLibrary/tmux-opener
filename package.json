@@ -195,20 +195,22 @@
     "compile": "node scripts/esbuild.js && node scripts/copy-webview-assets.js",
     "watch": "node scripts/esbuild.js --watch",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src",
+    "lint": "eslint .",
+    "test": "node --test test/*.test.js",
     "package": "node scripts/esbuild.js --production && node scripts/copy-webview-assets.js",
-    "vsix": "mkdir -p out && vsce package --dependencies --out out/"
+    "vsix": "mkdir -p out && vsce package --dependencies --out out/",
+    "vsix:all": "bash scripts/package-all.sh"
   },
   "dependencies": {
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.0",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.94.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
     "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^3.9.2",
+    "@xterm/addon-clipboard": "0.3.0-beta.288",
     "@xterm/addon-fit": "0.12.0-beta.288",
     "@xterm/addon-search": "0.17.0-beta.288",
     "@xterm/addon-unicode11": "0.10.0-beta.288",
@@ -216,7 +218,11 @@
     "@xterm/addon-webgl": "0.20.0-beta.287",
     "@xterm/xterm": "6.1.0-beta.288",
     "esbuild": "^0.21.0",
-    "eslint": "^8.57.0",
-    "typescript": "^5.4.0"
+    "eslint": "^10.0.0",
+    "eslint-plugin-no-unsanitized": "^4.1.2",
+    "eslint-plugin-security": "^4.0.1",
+    "globals": "^15.0.0",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.0.0"
   }
 }

@@ -1,16 +1,37 @@
 .vscode/**
 .claude/**
+# Dev-only: Claude Code guidance (also .gitattributes export-ignored, so it
+# never reaches the public repo — but a VSIX built here would still bundle it).
+CLAUDE.md
 src/**
 .gitignore
 scripts/**
 tsconfig.json
-.eslintrc.json
+# Glob, not a name: the flat-config file may be .mjs/.js/.cjs/.ts. It was once
+# named .eslintrc.json here, and renaming it leaked into the VSIX — a name-based
+# exclude repeats that trap. tsconfig.json above is left name-based: TypeScript
+# only reads that exact filename, so its extension can't drift.
+eslint.config.*
 out/**
 **/*.map
 **/.git/**
 tmp/**
+# Dev-only: the node --test suite (media/webview-keymap.js it exercises ships).
+test/**
+# Dev-only: shirokuma-flow config, rules and the .shirokuma/tmp review scratch.
+.shirokuma/**
+# Nothing lives here today (the release workflow was removed with GitHub Actions),
+# but repository metadata never belongs inside a VSIX. Kept so re-adding an issue
+# template or a workflow can't leak into the package.
+.github/**
 node_modules/node-addon-api/**
-node_modules/node-pty/prebuilds/**
+# node-pty resolves its binary as build/Release -> build/Debug ->
+# prebuilds/<platform>-<arch> (lib/utils.js). Linux has no prebuild and is
+# compiled into build/Release at install time; macOS ships one. Both must stay.
+# Windows can't run this extension at all — we spawn tmux directly — and its
+# prebuilds are 58MB of the two.
+node_modules/node-pty/prebuilds/win32-x64/**
+node_modules/node-pty/prebuilds/win32-arm64/**
 node_modules/node-pty/third_party/**
 node_modules/node-pty/deps/**
 node_modules/node-pty/src/**

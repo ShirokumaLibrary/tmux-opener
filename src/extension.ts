@@ -291,6 +291,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     uri?: string;
     profile?: string;
     visible?: boolean;
+    text?: string;
   }): void {
     if (message.type === 'input' && message.data !== undefined) {
       this.ptyProcess?.write(message.data);
@@ -316,6 +317,24 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       void vscode.commands.executeCommand('tmux-opener.openSettings');
     } else if (message.type === 'killSession' && message.name) {
       void this.killSession(message.name);
+    } else if (message.type === 'copy' && message.text) {
+      // The webview's own clipboard access needs transient user activation,
+      // which an OSC 52 sequence arriving from the pty never has.
+      void vscode.env.clipboard.writeText(message.text);
+    } else if (message.type === 'paste') {
+      // Back to the webview rather than straight into the pty: term.paste()
+      // wraps the text in bracketed-paste markers when the application asked
+      // for them, so a multi-line paste isn't executed line by line.
+      void vscode.env.clipboard.readText().then(
+        (text) => {
+          if (text) {
+            this.view?.webview.postMessage({ type: 'pasteText', text });
+          }
+        },
+        // A clipboard the host refuses to read (headless, remote) should paste
+        // nothing, not raise an unhandled rejection in the extension host.
+        (err) => console.error('Failed to read the clipboard', err),
+      );
     } else if (message.type === 'openLink' && message.uri) {
       void vscode.env.openExternal(vscode.Uri.parse(message.uri));
     }
@@ -672,6 +691,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     const addonUnicode11Js = mediaXterm('addon-unicode11.js');
     const addonSearchJs = mediaXterm('addon-search.js');
     const addonWebglJs = mediaXterm('addon-webgl.js');
+    const addonClipboardJs = mediaXterm('addon-clipboard.js');
+    const keymapUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-keymap.js'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-terminal.js'));
     const codiconCss = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css'),
@@ -971,6 +992,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 <script src="${addonUnicode11Js}"></script>
 <script src="${addonSearchJs}"></script>
 <script src="${addonWebglJs}"></script>
+<script src="${addonClipboardJs}"></script>
+<script src="${keymapUri}"></script>
 <script src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -980,7 +1003,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 async function pickAndOpenSession(terminalProvider: TmuxTerminalViewProvider): Promise<void> {
   const baseName = currentBaseName();
   if (!baseName) {
-    vscode.window.showErrorMessage('Tmux Opener: open a folder or workspace first.');
+    vscode.window.showErrorMessage(vscode.l10n.t('Tmux Opener: open a folder or workspace first.'));
     return;
   }
 
