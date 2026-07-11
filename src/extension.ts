@@ -121,6 +121,40 @@ function commandIsAvailable(command: string): boolean {
   }
 }
 
+/**
+ * Whether `tmux` is installed and runnable. The extension does nothing without
+ * it, so a missing tmux is worth catching up front instead of letting
+ * `pty.spawn` fail with a bare `spawn tmux ENOENT` in the terminal pane. We run
+ * `tmux -V` rather than just probing PATH so a present-but-unrunnable binary
+ * still counts as missing, and it runs in the extension host's environment,
+ * which is the very environment `pty.spawn` inherits (resolvePtyEnv only
+ * rewrites the locale), so this check can't disagree with the spawn it guards.
+ */
+function tmuxIsInstalled(): boolean {
+  try {
+    execFileSync('tmux', ['-V'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A platform-appropriate one-liner for how to install tmux. */
+function tmuxInstallHint(): string {
+  if (process.platform === 'darwin') {
+    return vscode.l10n.t('Install it with Homebrew: brew install tmux');
+  }
+  // tmux has no native Windows build — the extension spawns it directly, so the
+  // only way it works on Windows is the WSL side, where the extension runs on
+  // Linux and tmux is a package install like any other distro.
+  if (process.platform === 'win32') {
+    return vscode.l10n.t(
+      'tmux does not run on native Windows. Reopen your project in WSL (Remote - WSL) and install tmux there.',
+    );
+  }
+  return vscode.l10n.t('Install it with your package manager, e.g. sudo apt install tmux');
+}
+
 /** Session-name suffix for a profile: explicit, else a slug of the label. */
 function profileSuffix(profile: TmuxProfile): string {
   const explicit = profile.sessionSuffix?.trim();
@@ -261,6 +295,13 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    * Extension-host lifetime only; tmux is still the source of truth.
    */
   private readonly sessionCommands = new Map<string, string>();
+  /**
+   * Guards the missing-tmux notification so the passive attach on view-open
+   * pops it at most once per activation (a window reload shouldn't nag);
+   * explicit user actions always get one. Reset after a session starts, so a
+   * tmux that later disappears warns afresh.
+   */
+  private warnedTmuxMissing = false;
 
   constructor(private readonly extensionUri: vscode.Uri) {
     this.viewReady = new Promise((resolve) => {
@@ -503,7 +544,37 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     await vscode.commands.executeCommand('tmuxOpener.terminal.focus');
     const view = this.view ?? (await this.viewReady);
     view.show?.(true);
-    await this.attachSession(sessionName, command);
+    await this.attachSession(sessionName, command, true);
+  }
+
+  /**
+   * tmux is required and absent. Explain it in the terminal pane (always), and
+   * raise a notification with install guidance — every time for an explicit
+   * user action, but only once per activation for the automatic attach on
+   * view-open, so reloading the window doesn't nag.
+   */
+  private async reportTmuxMissing(interactive: boolean): Promise<void> {
+    const view = this.view ?? (await this.viewReady);
+    this.currentSession = undefined;
+    view.webview.postMessage({
+      type: 'info',
+      text: `${vscode.l10n.t('tmux was not found on your PATH. Install tmux and reopen this view.')}\r\n`,
+    });
+    this.pushSessions();
+
+    if (!interactive && this.warnedTmuxMissing) {
+      return;
+    }
+    this.warnedTmuxMissing = true;
+
+    const learnMore = vscode.l10n.t('Install Instructions');
+    const choice = await vscode.window.showErrorMessage(
+      vscode.l10n.t('Tmux Opener: tmux is not installed or not on your PATH. {0}', tmuxInstallHint()),
+      learnMore,
+    );
+    if (choice === learnMore) {
+      void vscode.env.openExternal(vscode.Uri.parse('https://github.com/tmux/tmux/wiki/Installing'));
+    }
   }
 
   /**
@@ -511,8 +582,16 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    * itself on open, and when a kill falls back to the next session — in both
    * cases stealing focus from the editor would be wrong.
    */
-  private async attachSession(sessionName: string, command?: string): Promise<void> {
+  private async attachSession(sessionName: string, command?: string, interactive = false): Promise<void> {
     const view = this.view ?? (await this.viewReady);
+
+    // Nothing here works without tmux. Catch it before pty.spawn so the pane
+    // explains itself (and, when the user asked, a notification points at how
+    // to install it) instead of surfacing a bare `spawn tmux ENOENT`.
+    if (!tmuxIsInstalled()) {
+      await this.reportTmuxMissing(interactive);
+      return;
+    }
 
     // Detach the old client (the tmux session survives server-side). Clearing
     // the field first neutralizes its onExit — we are replacing it, not
@@ -564,6 +643,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       return;
     }
     this.ptyProcess = proc;
+    // A session started, so tmux is present now; let a future disappearance warn.
+    this.warnedTmuxMissing = false;
 
     // The webview's last known fit may be stale (first load, or the panel
     // was resized while a different session was showing) — ask it to
