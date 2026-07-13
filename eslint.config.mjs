@@ -50,6 +50,7 @@ const lintTargets = [
   'src/**/*.ts',
   'media/webview-terminal.js',
   'media/webview-keymap.js',
+  'media/webview-sound.js',
   'test/**/*.js',
   'scripts/**/*.js',
 ];
@@ -118,11 +119,11 @@ export default tseslint.config(
     // Webview scripts: plain browser <script>s (not bundled, not modules). They
     // need the DOM globals plus the xterm.js UMD globals and acquireVsCodeApi,
     // none of which are declared in-file. `module` is deliberately NOT given
-    // here — only webview-keymap.js has it (next block), so a stray `module`
+    // here — only the UMD-guarded files have it (next block), so a stray `module`
     // reference in webview-terminal.js (a bare webview script) is still caught
     // by no-undef.
     name: 'media/webview',
-    files: ['media/webview-terminal.js', 'media/webview-keymap.js'],
+    files: ['media/webview-terminal.js', 'media/webview-keymap.js', 'media/webview-sound.js'],
     extends: [js.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,
@@ -130,9 +131,11 @@ export default tseslint.config(
       globals: {
         ...globals.browser,
         acquireVsCodeApi: 'readonly',
-        // webview-keymap.js's UMD guard exposes window.TmuxKeymap, which
-        // webview-terminal.js consumes.
+        // The UMD guards in webview-keymap.js / webview-sound.js expose
+        // window.TmuxKeymap / window.TmuxSound, which webview-terminal.js
+        // consumes.
         TmuxKeymap: 'readonly',
+        TmuxSound: 'readonly',
         // xterm.js + addon UMD globals loaded from media/xterm/ before these run.
         Terminal: 'readonly',
         FitAddon: 'readonly',
@@ -148,12 +151,12 @@ export default tseslint.config(
     },
   },
   {
-    // webview-keymap.js alone carries a UMD guard (`typeof module !== 'undefined'
+    // The pure webview modules carry a UMD guard (`typeof module !== 'undefined'
     // && module.exports`) so the same file can be require()d from the Node
-    // tests. Only it may reference `module`; `exports` is never touched (the
+    // tests. Only they may reference `module`; `exports` is never touched (the
     // guard writes module.exports), so it is not declared.
-    name: 'media/webview-keymap',
-    files: ['media/webview-keymap.js'],
+    name: 'media/webview-umd',
+    files: ['media/webview-keymap.js', 'media/webview-sound.js'],
     languageOptions: {
       globals: {
         module: 'readonly',

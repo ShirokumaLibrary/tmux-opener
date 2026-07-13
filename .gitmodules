@@ -1,0 +1,3 @@
+[submodule ".shirokuma/pages"]
+	path = .shirokuma/pages
+	url = git@github.com:ShirokumaDevelopment/tmux-opener-pages.git

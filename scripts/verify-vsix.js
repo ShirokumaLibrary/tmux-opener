@@ -24,6 +24,30 @@ const zlib = require('zlib');
 const NODE_PTY = 'extension/node_modules/node-pty';
 const PTY = `${NODE_PTY}/build/Release/pty.node`;
 
+// Dev-only trees that .vscodeignore excludes, asserted absent from the package.
+//
+// The excludes are name-based, so a rename silently defeats them: renaming
+// .eslintrc.json to the flat config leaked the config into a VSIX once already,
+// and `examples/` -> `claude/` (#83) is the same shape of move. A name-based
+// exclude cannot notice it is no longer matching anything — this can.
+//
+// Every path here carries the `extension/` prefix a VSIX gives its payload (see
+// NODE_PTY above). Written bare, `claude/` would match no entry in any VSIX,
+// ever, and the guard would pass forever without checking anything.
+const DEV_ONLY_PREFIXES = [
+  'extension/claude/',      // the scripts installed into ~/.claude (npm run claude:install)
+  'extension/.claude/',     // this repo's own Claude Code settings — a different thing
+  'extension/scripts/',
+  'extension/src/',
+  'extension/test/',
+  'extension/tmp/',
+  'extension/.shirokuma/',
+  'extension/.github/',
+  'extension/infra/',
+  'extension/.vscode/',
+];
+const DEV_ONLY_FILES = ['extension/CLAUDE.md'];
+
 // `vsce package --target <t>` writes the target into the filename, which is the
 // only place we can recover it from a finished VSIX without parsing the manifest.
 // linux: node-pty ships no Linux prebuild, so the binary that runs is the one
@@ -127,6 +151,20 @@ for (const file of process.argv.slice(2)) {
   const buf = fs.readFileSync(file);
   const entries = readCentralDirectory(buf);
   const problems = [];
+
+  // Dev-only trees must not have shipped. Name the offending entries: the point
+  // of failing here is to say *which* exclude stopped matching.
+  const leaked = [...entries.keys()].filter(
+    (name) =>
+      DEV_ONLY_PREFIXES.some((p) => name.startsWith(p)) || DEV_ONLY_FILES.includes(name),
+  );
+  if (leaked.length) {
+    const shown = leaked.slice(0, 5).join(', ');
+    const more = leaked.length > 5 ? `, … (${leaked.length} entries)` : '';
+    problems.push(
+      `dev-only files leaked into the VSIX — check .vscodeignore: ${shown}${more}`,
+    );
+  }
 
   const expected = TARGET_MACHINE[target];
   const pty = entries.get(expected.entry);

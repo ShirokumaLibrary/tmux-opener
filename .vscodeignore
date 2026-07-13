@@ -16,10 +16,27 @@ out/**
 **/*.map
 **/.git/**
 tmp/**
-# Dev-only: the node --test suite (media/webview-keymap.js it exercises ships).
+# Dev-only: the node --test suite. The webview modules it exercises
+# (media/webview-keymap.js, media/webview-sound.js) are NOT dev-only — media/**
+# is not excluded here, so they ship, which is what the webview's <script> tags
+# need.
 test/**
+# Dev-only: the reference scripts installed into ~/.claude (statusline, hooks).
+# Users get them from the repo — `npm run claude:install`, or the links in the
+# README for VSIX users — so they needn't bloat the VSIX (#41).
+#
+# NOT the same thing as `.claude/**` on line 2: that one is this repo's own
+# Claude Code *settings*, this one is the *distributed scripts*. One character
+# apart, and deleting the wrong one either leaks the dev settings or ships the
+# distributables. This exclude is name-based and a rename silently defeats it
+# (see eslint.config.* above), so if `claude/` is ever renamed, this line must
+# move with it in the same commit — scripts/verify-vsix.js asserts the absence
+# of `extension/claude/` so the mistake fails the release gate (#83).
+claude/**
 # Dev-only: shirokuma-flow config, rules and the .shirokuma/tmp review scratch.
 .shirokuma/**
+# Dev-only: local nginx preview for the .shirokuma/pages confirmation-view submodule.
+infra/**
 # Nothing lives here today (the release workflow was removed with GitHub Actions),
 # but repository metadata never belongs inside a VSIX. Kept so re-adding an issue
 # template or a workflow can't leak into the package.

@@ -1,13 +1,119 @@
 import * as vscode from 'vscode';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import * as fs from 'node:fs';
 import * as pty from 'node-pty';
+import {
+  detailFromBridge,
+  statusFilePath,
+  bellReasonFilePath,
+  resolveBellReason,
+  selectPreset,
+  selectToastMessageKey,
+  isFresh,
+  BELL_SETTLE_MS,
+  type BellReason,
+} from './status-bridge.js';
+import {
+  isRelatedSession,
+  nextSessionName,
+  profileSuffix,
+  relatedSessions,
+  sessionBaseName,
+  type TmuxSession,
+} from './session-name.js';
+import {
+  bellNotificationSurfaces,
+  detectBellEdges,
+  initialBellState,
+  parseBellingSessions,
+  shouldNotifySession,
+  shouldOfferSoundUnlock,
+  shouldTrackSoundAck,
+  soundOutcomeFor,
+  type BellState,
+  type SoundOutcome,
+} from './bell-notify.js';
 
-interface TmuxSession {
-  name: string;
-  windows: number;
-  attached: boolean;
-}
+/**
+ * Background bell poll interval (ms). Design #16 recommends 2–3s; 2500ms keeps
+ * the worst-case latency for a background session's bell under ~2.5s while
+ * running `tmux list-windows` only when the view is visible and there is at
+ * least one background session to watch (see `updateBellPolling`).
+ */
+const BELL_POLL_INTERVAL_MS = 2500;
+
+/**
+ * How long to wait for the webview's *first* word about a bell we posted (#81,
+ * design #78 D2). This is a liveness probe, not a measurement of anything about
+ * audio: by contract the webview answers synchronously from its `message`
+ * handler, so the first word costs about one round trip (the message crosses the
+ * link twice — out and back — which is 1 RTT) plus whatever queueing the renderer
+ * adds. The moment it says `resume-pending` this timer is cleared and replaced by
+ * `RESUME_LANDING_WINDOW_MS`, so it only ever expires when the webview says
+ * *nothing* — it is dead, unreachable, or badly stalled.
+ *
+ * The two errors cost wildly different things, so the value sits at the high end
+ * of the band:
+ *
+ * - Too short is the expensive one: the feature disappears silently. Under
+ *   Remote-SSH the extension host is remote and the webview local (ADR #34), so
+ *   that round trip crosses the network, and bells typically ring while a burst
+ *   of pty output is flowing down the same connection (head-of-line blocking).
+ *   Give up early and every bell on that link resolves to `unknown` -> no action;
+ *   the late ack that finally arrives is dropped, because its id is gone from
+ *   `pendingSoundAcks`. The feature would be absent exactly for the users who
+ *   need it most, and would not self-heal.
+ * - Too long only delays a toast, and only when the webview really isn't
+ *   answering. Neither live path reaches this timer: a healthy bell replies in
+ *   1 RTT, and a blocked one switches to the landing window.
+ *
+ * The ceiling is not latency but the per-session cooldown (`DEFAULT_COOLDOWN_MS`
+ * = 5000, `bell-notify.ts`): the worst-case toast delay is BELL_SETTLE_MS (250)
+ * + this = 3250ms, and staying under 5000 is what keeps at most one bell per
+ * session undecided — a late toast can never overtake the next bell. 3000
+ * swallows an intercontinental RTT plus a jammed renderer and still clears that.
+ */
+const SOUND_ACK_TIMEOUT_MS = 3000;
+
+/**
+ * How long to wait for the webview's *correction* after it told us a bell's
+ * resume had parked (#81). Derived as `RESUME_GRACE_MS` (250, the webview's own
+ * deadline for a landing resume) + 150ms of one-way jitter. Only jitter, not RTT:
+ * the two messages (`resume-pending`, then `played`/`grace-exceeded`) travel the
+ * same direction back to back, so any delay they share — RTT, head-of-line
+ * blocking behind pty output — cancels out in the gap between them.
+ *
+ * Expiring this window means "conclude blocked", and that is *usually* the same
+ * verdict the late message would have carried: a resume that takes longer than
+ * the webview's own 250ms grace is dropped there and reported `grace-exceeded`,
+ * which is blocked as well. It is not, however, a guarantee, and the exact shape
+ * of the exception is what fixes this constant's value:
+ *
+ * - False positives are possible. A resume that lands *inside* the grace rings
+ *   the bell and reports `played`, but that message still has to reach us. It
+ *   travels the same direction as `resume-pending`, so their shared delay cancels
+ *   out — what does not cancel is the *jitter between the two*, and the pty output
+ *   they queue behind (head-of-line blocking, again) can produce exactly that. Let
+ *   the gap between the two messages exceed 150ms and the window has already
+ *   expired, the id is gone, `played` is dropped on arrival, and a bell that rang
+ *   gets a `Play Sound` button — the one lie this design says it cannot retract.
+ * - So the 150ms is the safety margin against that, not spare change. **Do not
+ *   shrink this window** (250 + 50, say) on the theory that a late message is
+ *   blocked anyway: it is not, and shrinking it buys nothing but lying buttons.
+ * - And if false positives are ever *observed*, do not widen it either — that
+ *   only trades the lie for a slower toast and still leaves the tail uncovered.
+ *   Move to a pull model instead (design #78, option G): let the toast ask the
+ *   webview for the bell's state when it is about to show, rather than racing a
+ *   deadline against the answer.
+ *
+ * This window and SOUND_ACK_TIMEOUT_MS never run at the same time; receiving
+ * `resume-pending` clears the first and arms this one. Running both would let the
+ * 3000ms probe fire first on a high-RTT link and overwrite this window's verdict
+ * (`blocked`) with `unknown` (no action) — so the correctness of the judgement
+ * would depend on the relative values of two constants. Switching makes it not.
+ */
+const RESUME_LANDING_WINDOW_MS = 400;
 
 /** The value side of a `tmuxOpener.profiles` entry. `null` hides the profile. */
 interface TmuxProfileConfig {
@@ -70,10 +176,6 @@ async function updateProfileContexts(): Promise<void> {
       !visible.has(label),
     );
   }
-}
-
-function sanitizeSessionName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
 /** Translations reach the webview's HTML, so they must not close an attribute. */
@@ -155,16 +257,6 @@ function tmuxInstallHint(): string {
   return vscode.l10n.t('Install it with your package manager, e.g. sudo apt install tmux');
 }
 
-/** Session-name suffix for a profile: explicit, else a slug of the label. */
-function profileSuffix(profile: TmuxProfile): string {
-  const explicit = profile.sessionSuffix?.trim();
-  const slug = sanitizeSessionName(explicit || profile.label)
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase();
-  return slug || 'profile';
-}
-
 function listTmuxSessions(): TmuxSession[] {
   let output: string;
   try {
@@ -188,36 +280,12 @@ function listTmuxSessions(): TmuxSession[] {
     });
 }
 
-function relatedSessions(baseName: string, sessions: TmuxSession[]): TmuxSession[] {
-  return sessions
-    .filter((s) => s.name === baseName || s.name.startsWith(`${baseName}-`))
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-}
-
-/**
- * `<base>`, then `<base>-2`, `<base>-3`… A profile narrows this to its own
- * namespace (`<base>-claude`, `<base>-claude-2`), so profile sessions never
- * consume the plain numbering and stay recognizable in the list.
- */
-function nextSessionName(baseName: string, sessions: TmuxSession[], suffix?: string): string {
-  const taken = new Set(sessions.map((s) => s.name));
-  const prefix = suffix ? `${baseName}-${suffix}` : baseName;
-  if (!taken.has(prefix)) {
-    return prefix;
-  }
-  let n = 2;
-  while (taken.has(`${prefix}-${n}`)) {
-    n += 1;
-  }
-  return `${prefix}-${n}`;
-}
-
 function currentBaseName(): string | undefined {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     return undefined;
   }
-  return sanitizeSessionName(folders[0].name);
+  return sessionBaseName(folders[0].name);
 }
 
 function currentCwd(): string {
@@ -285,6 +353,42 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   private readonly viewReady: Promise<vscode.WebviewView>;
   private ptyProcess?: pty.IPty;
   private currentSession?: string;
+  // Shared per-session bell cooldown for both the front-of-house `onBell` path
+  // (here) and the background poller (#20), so the two throttle each other.
+  private bellState: BellState = initialBellState();
+  // The background poller's timer, running only while the view is visible and a
+  // background session exists (#20). `undefined` means paused.
+  private pollTimer?: ReturnType<typeof setInterval>;
+  /**
+   * Bells posted to the webview whose outcome we are still waiting on (#81).
+   * Keyed by a monotonic id so a `soundResult` can be matched to the bell that
+   * caused it. Entries exist only for bells whose toast could actually carry the
+   * action (`notifySound && notifyToast && this.view`); anything else is posted
+   * without an entry, and its reply is discarded as an unknown id.
+   *
+   * The rules that keep this from leaking or lying:
+   * - resolve-once. `resume-pending` is an intermediate record — it re-arms the
+   *   timer and flips `parked`, it never resolves.
+   * - both the resolve path and the timeout path `delete` the entry and
+   *   `clearTimeout` its timer, so no timer outlives its bell.
+   * - a `soundResult` for an id we don't hold is dropped (a late ack for a bell
+   *   we already gave up on, or an untracked one).
+   * - `dispose()` and the view's `onDidDispose` settle every entry as `unknown`,
+   *   so no timer outlives the provider (same discipline as `pollTimer`).
+   */
+  private readonly pendingSoundAcks = new Map<
+    number,
+    {
+      resolve: (outcome: SoundOutcome) => void;
+      timer: ReturnType<typeof setTimeout>;
+      parked: boolean;
+    }
+  >();
+  private nextSoundId = 1;
+  // `set-option -wg monitor-bell on` is best-effort and idempotent; run it once
+  // on the first successful attach (a session — hence a tmux server — exists by
+  // then, so it can't spawn an empty server just to hold the option).
+  private monitorBellEnabled = false;
   private lastCols = 80;
   private lastRows = 24;
   /**
@@ -317,8 +421,16 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message));
+    // Pause the background poller while the view is hidden and resume it when it
+    // comes back — a hidden view has nothing to notify about, so there's no
+    // point running `tmux list-windows` every few seconds behind it.
+    webviewView.onDidChangeVisibility(() => this.updateBellPolling());
     webviewView.onDidDispose(() => {
       this.view = undefined;
+      this.updateBellPolling();
+      // Nothing can answer a pending bell any more; let its toast go out plain
+      // rather than sit on a timer belonging to a view that is gone.
+      this.settleAllSoundAcks();
     });
     this.resolveView(webviewView);
   }
@@ -333,6 +445,9 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     profile?: string;
     visible?: boolean;
     text?: string;
+    id?: number;
+    played?: boolean;
+    reason?: string;
   }): void {
     if (message.type === 'input' && message.data !== undefined) {
       this.ptyProcess?.write(message.data);
@@ -378,7 +493,397 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       );
     } else if (message.type === 'openLink' && message.uri) {
       void vscode.env.openExternal(vscode.Uri.parse(message.uri));
+    } else if (message.type === 'bell') {
+      if (this.currentSession) {
+        this.notifyBell(this.currentSession).catch((err) =>
+          console.error('Failed to notify on bell', err),
+        );
+      }
+    } else if (message.type === 'soundResult' && typeof message.id === 'number') {
+      this.handleSoundResult(message.id, message.played === true, message.reason);
     }
+  }
+
+  /**
+   * The webview's verdict on one bell (#81). Every branch below is driven by
+   * something the webview *said*; the host never infers a verdict from silence
+   * (that is `unknown`, and it offers no action).
+   */
+  private handleSoundResult(id: number, played: boolean, reason?: string): void {
+    const pending = this.pendingSoundAcks.get(id);
+    if (!pending) {
+      return; // A late ack for a bell we already settled, or one we never tracked.
+    }
+    // `resume-pending` is the protocol's one *intermediate* message, so it is
+    // handled here rather than folded into an outcome: it doesn't resolve the
+    // bell, it swaps which deadline the bell is under. Everything else is a
+    // conclusion, and `soundOutcomeFor` (pure, tested) owns that mapping.
+    if (!played && reason === 'resume-pending') {
+      if (pending.parked) {
+        // Unreachable as the protocol stands — `playNotifySound` posts at most one
+        // `resume-pending` per id, and ids are never reused. Kept because the cost
+        // of being wrong is asymmetric: a second one arriving would otherwise
+        // re-arm the landing window and could hold the toast open indefinitely.
+        return;
+      }
+      // Switch deadlines rather than run both: this message proves the webview is
+      // alive, which is the only question SOUND_ACK_TIMEOUT_MS was asking.
+      clearTimeout(pending.timer);
+      pending.parked = true;
+      pending.timer = setTimeout(
+        () => this.settleSoundAck(id, 'blocked'),
+        RESUME_LANDING_WINDOW_MS,
+      );
+      return;
+    }
+    this.settleSoundAck(id, soundOutcomeFor(played, reason));
+  }
+
+  /**
+   * Post `playSound` for a bell and, when its outcome could actually change the
+   * toast, wait for the webview to conclude. Returns the verdict; `unknown` when
+   * we aren't tracking this bell (nothing the answer could change) or the webview
+   * never answers.
+   *
+   * Every `playSound` on the wire is built here — including the `Play Sound`
+   * replay, which passes `userInitiated` — so the message shape and the id
+   * counter have one home. The id is the ack's key, so an *untracked* bell is
+   * posted without one: we would hold no entry to match a reply against and would
+   * drop it on arrival, and the webview reads the missing id as "don't answer"
+   * (`postSoundResult`), which keeps 1-2 pointless messages per bell off a link
+   * that under Remote-SSH is already carrying the pty. Track and id travel
+   * together: never send one without the other.
+   */
+  private postPlaySound(
+    preset: string,
+    track: boolean,
+    userInitiated = false,
+  ): Promise<SoundOutcome> {
+    if (!track) {
+      void this.view?.webview.postMessage({ type: 'playSound', preset, userInitiated });
+      return Promise.resolve('unknown');
+    }
+    const id = this.nextSoundId++;
+    const outcome = new Promise<SoundOutcome>((resolve) => {
+      const timer = setTimeout(() => this.settleSoundAck(id, 'unknown'), SOUND_ACK_TIMEOUT_MS);
+      this.pendingSoundAcks.set(id, { resolve, timer, parked: false });
+    });
+    void this.view?.webview.postMessage({ type: 'playSound', preset, id, userInitiated });
+    return outcome;
+  }
+
+  /** Resolve one pending bell, clearing its timer and dropping the entry. */
+  private settleSoundAck(id: number, outcome: SoundOutcome): void {
+    const pending = this.pendingSoundAcks.get(id);
+    if (!pending) {
+      return;
+    }
+    this.pendingSoundAcks.delete(id);
+    clearTimeout(pending.timer);
+    pending.resolve(outcome);
+  }
+
+  /** Settle every pending bell as `unknown` (view or provider going away). */
+  private settleAllSoundAcks(): void {
+    for (const id of [...this.pendingSoundAcks.keys()]) {
+      this.settleSoundAck(id, 'unknown');
+    }
+  }
+
+  /**
+   * A bell from the live (front-of-house) session: throttle it through the
+   * shared per-session cooldown, then — when `tmuxOpener.notifyOnBell` is on —
+   * raise a native notification whose one action re-reveals the session.
+   */
+  private async notifyBell(sessionName: string): Promise<void> {
+    // Gate on the setting *before* touching the shared cooldown: the cooldown
+    // must advance only when a notification actually fires. The background
+    // poller (#20) shares `bellState`, and it relies on `lastNotifiedAt`
+    // meaning "we notified", so a suppressed bell must leave the state alone.
+    const notifyOnBell = vscode.workspace
+      .getConfiguration('tmuxOpener')
+      .get<boolean>('notifyOnBell', true);
+    if (!notifyOnBell) {
+      return;
+    }
+
+    const { notify, nextState } = shouldNotifySession(
+      this.bellState,
+      sessionName,
+      Date.now(),
+    );
+    if (!notify) {
+      return;
+    }
+
+    // The bell reason drives both the sound preset (#47) and the toast wording
+    // (#64), so resolve it once and share it. Read the reason files only when at
+    // least one consumer is on. The opt-in bell-reason hook writes
+    // `.stop.json` / `.ask.json` *before* emitting the BEL, so an initial read
+    // tells us whether this bell carries a reason. No fresh reason file -> a
+    // user without the hooks: keep the zero-latency path (no settle) and fall
+    // back to the plain preset / neutral toast (behavior unchanged). At least
+    // one fresh -> the co-firing sibling (Stop vs Notification) may still be in
+    // flight, so settle briefly, re-read, then resolve the reason.
+    const notifyToast = vscode.workspace
+      .getConfiguration('tmuxOpener')
+      .get<boolean>('notifyToast', true);
+    const notifySound = vscode.workspace
+      .getConfiguration('tmuxOpener')
+      .get<boolean>('notifySound', true);
+
+    // Commit the shared cooldown only now that we know something will surface.
+    // With both channels off (yet `notifyOnBell` on) nothing plays or shows, so
+    // advancing `bellState` here would throttle a later, audible bell behind a
+    // notification that never happened — the invariant guarded above. The commit
+    // still lands before any settle, so a co-firing sibling can't double-notify.
+    if (!bellNotificationSurfaces(notifySound, notifyToast)) {
+      return;
+    }
+    this.bellState = nextState;
+
+    // The surfaces gate above already returned when both channels are off, so
+    // by here at least one will surface — resolve the reason unconditionally.
+    let reason: BellReason = 'stop';
+    const initial = this.readBellReasons(sessionName);
+    const now = Date.now();
+    const anyFresh =
+      (initial.stopMtime !== undefined && isFresh(initial.stopMtime, now)) ||
+      (initial.askMtime !== undefined && isFresh(initial.askMtime, now));
+    if (anyFresh) {
+      await new Promise((resolve) => setTimeout(resolve, BELL_SETTLE_MS));
+      const settled = this.readBellReasons(sessionName);
+      reason = resolveBellReason({
+        stopMtime: settled.stopMtime,
+        askMtime: settled.askMtime,
+        now: Date.now(),
+      });
+    }
+
+    // Play a sound alongside the toast (opt-out via `notifySound`). The webview
+    // owns the synthesis — it always runs on the local machine, so this is heard
+    // at the keyboard even when the extension host is remote (Remote-SSH). The
+    // host only forwards the chosen preset id; it doesn't know what it sounds
+    // like. Sent before the awaited toast so the sound isn't delayed by it. With
+    // no fresh reason `reason` stays 'stop', so `selectPreset` yields the plain
+    // preset — the hook-less path is unchanged.
+    //
+    // The webview answers with one conclusive `soundResult` per bell (#81), and
+    // we wait for it only when the answer could change what the toast shows —
+    // `notifySound && notifyToast && this.view` (design #78 D6). The sound is
+    // still posted first and is never delayed by the wait; what the wait delays
+    // is the toast (by ~1 RTT when healthy, which under Remote-SSH is a real
+    // cost, accepted and recorded in CLAUDE.md).
+    let preset = '';
+    let soundAck: Promise<SoundOutcome> | undefined;
+    if (notifySound) {
+      const config = vscode.workspace.getConfiguration('tmuxOpener');
+      const stopPreset = config.get<string>('notifySoundPreset', 'classic');
+      const askPreset = config.get<string>('notifySoundPresetOnAsk', 'siren');
+      preset = selectPreset(reason, stopPreset, askPreset);
+      // Track the ack only when the answer could change what the user sees — the
+      // same three-surface rule `shouldOfferSoundUnlock` applies below, called
+      // through the one predicate both derive from so they cannot drift apart.
+      soundAck = this.postPlaySound(
+        preset,
+        shouldTrackSoundAck(notifySound, notifyToast, this.view !== undefined),
+      );
+    }
+
+    // The toast itself (opt-out via `notifyToast`; full stop is `notifyOnBell`).
+    // Gate everything toast-related — including the optional statusline detail —
+    // behind it: with the toast off there is nothing to append to.
+    if (notifyToast) {
+      // Opt-in statusline bridge (#41, design #39): a user's Claude Code
+      // statusline script drops an excerpt JSON keyed by session name into the
+      // cache dir; if it exists and is fresh, append its context%/cost to the
+      // toast. Writer (the script) and reader (here) always run on the same
+      // machine/FS/clock — the extension host spawned the tmux this statusline
+      // runs under (so mtime freshness and the shared path are sound, even under
+      // Remote-SSH). Every failure (no file, stale, parse error, wrong types)
+      // falls back to the plain toast; the whole read is wrapped in try/catch.
+      let detail = '';
+      const notifyBridgeStatusline = vscode.workspace
+        .getConfiguration('tmuxOpener')
+        .get<boolean>('notifyBridgeStatusline', true);
+      if (notifyBridgeStatusline) {
+        detail = this.readBridgeDetail(sessionName) ?? '';
+      }
+
+      // The bell we posted above may not have been heard: with no sticky
+      // activation the webview's `resume()` parks forever and the sound is
+      // dropped (#70/#73). It says so, and only then does the toast carry
+      // `Play Sound` — a click on it is a real gesture on the workbench's top
+      // frame, which arms the Window's sticky activation and, through the
+      // iframe's `allow="autoplay"`, lets the webview's context start.
+      const soundOutcome: SoundOutcome = soundAck ? await soundAck : 'unknown';
+      const offerSound = shouldOfferSoundUnlock(
+        notifySound,
+        notifyToast,
+        this.view !== undefined,
+        soundOutcome,
+      );
+
+      // Wording splits on the resolved reason (#64): completion vs
+      // waiting-for-input when a fresh reason file exists, else the neutral
+      // default. The key is passed to `vscode.l10n.t` for ja translation.
+      const open = vscode.l10n.t('Open');
+      const playSound = vscode.l10n.t('Play Sound');
+      // `Open` stays first (D5). `showInformationMessage` returns only the one
+      // action the user picked, so these are mutually exclusive — which is
+      // harmless: either click is a real gesture, so picking `Open` still arms
+      // sticky activation and every bell after it rings. Only the replay of this
+      // one missed bell is lost.
+      const actions = offerSound ? [open, playSound] : [open];
+      const messageKey = selectToastMessageKey(anyFresh, reason);
+      const choice = await vscode.window.showInformationMessage(
+        vscode.l10n.t(messageKey, sessionName) + detail,
+        ...actions,
+      );
+      if (choice === open) {
+        void vscode.commands.executeCommand('tmux-opener.openSpecificSession', sessionName);
+      } else if (choice === playSound) {
+        // Same message type, same preset, same builder — no new protocol and no
+        // hand-rolled message for the retry. The sound playing *is* the proof that
+        // it worked. `userInitiated` exempts this one bell from the webview's grace
+        // window: a sound the user asked for is not a "now" signal, so arriving a
+        // moment late is fine. It stays scoped to this single message and is never
+        // applied to real bells (that would reopen the #70 pile-up). Untracked
+        // (`track: false`): no toast follows it, so there is no verdict to act on —
+        // and so it goes out without an id and the webview stays quiet about it.
+        void this.postPlaySound(preset, false, true);
+      }
+    }
+  }
+
+  /**
+   * Read the statusline bridge file for `sessionName` and return the toast
+   * detail suffix (e.g. ` (context 82%, cost $0.45)`), or `undefined` to keep the
+   * plain toast. All I/O lives here; the path/freshness/parse/compose decisions
+   * are the pure `status-bridge` module. Anything going wrong — the file is
+   * missing, stale, half-written, malformed, or mistyped — is swallowed so a
+   * bell never fails to notify because of the optional bridge.
+   */
+  private readBridgeDetail(sessionName: string): string | undefined {
+    try {
+      const path = statusFilePath(sessionName, process.env, homedir());
+      const raw = fs.readFileSync(path, 'utf8');
+      const mtimeMs = fs.statSync(path).mtimeMs;
+      return detailFromBridge(raw, mtimeMs, Date.now(), (message, ...args) =>
+        vscode.l10n.t(message, ...args),
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Stat the two bell-reason bridge files for `sessionName` and return their
+   * mtimes (Issue #47), `undefined` where a file is absent. All I/O lives here;
+   * the reason decision is the pure `resolveBellReason`. Each stat is guarded
+   * independently so a missing `.ask.json` doesn't hide a present `.stop.json`.
+   * Writer (the hook script) and reader run on the same machine/FS/clock — the
+   * extension host spawned the tmux the hooks run under — so the mtimes are
+   * comparable even under Remote-SSH (mirrors `readBridgeDetail`).
+   */
+  private readBellReasons(sessionName: string): {
+    stopMtime: number | undefined;
+    askMtime: number | undefined;
+  } {
+    const statMtime = (reason: 'stop' | 'ask'): number | undefined => {
+      try {
+        const path = bellReasonFilePath(sessionName, reason, process.env, homedir());
+        return fs.statSync(path).mtimeMs;
+      } catch {
+        return undefined;
+      }
+    };
+    return { stopMtime: statMtime('stop'), askMtime: statMtime('ask') };
+  }
+
+  /**
+   * Best-effort, idempotent `tmux set-option -wg monitor-bell on` so a bell in
+   * any window — existing or created later by an AI CLI — sets
+   * `window_bell_flag`, which the background poller reads (#16, design A). A
+   * *global window option*: windows leave `monitor-bell` unset locally and
+   * inherit it, so future windows follow without re-running this. Run once, on
+   * the first attach, when a tmux server is known to exist (so it can't spawn an
+   * empty one). Failure is swallowed — the front-of-house `onBell` path (a) is
+   * independent of it; only background detection (b) depends on the flag.
+   */
+  private enableMonitorBell(): void {
+    if (this.monitorBellEnabled) {
+      return;
+    }
+    this.monitorBellEnabled = true;
+    try {
+      execFileSync('tmux', ['set-option', '-wg', 'monitor-bell', 'on'], { stdio: 'ignore' });
+    } catch {
+      // best-effort; leave background detection degraded rather than crashing.
+    }
+  }
+
+  /**
+   * Start or stop the background poller to match the current state: run it only
+   * while the view is visible and at least one *background* (non-current)
+   * related session exists. The front session is the live-pty `onBell`'s job, so
+   * with nothing but it around the poller has nothing to watch. Called on every
+   * session-set change (`pushSessions`) and visibility change.
+   */
+  private updateBellPolling(): void {
+    const baseName = currentBaseName();
+    const visible = this.view?.visible ?? false;
+    const background = baseName
+      ? relatedSessions(baseName, listTmuxSessions()).filter((s) => s.name !== this.currentSession)
+      : [];
+    if (visible && background.length > 0) {
+      if (!this.pollTimer) {
+        this.pollTimer = setInterval(() => this.pollBackgroundBells(), BELL_POLL_INTERVAL_MS);
+      }
+    } else if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
+  }
+
+  /**
+   * One poll cycle: read every window's bell flag asynchronously (never the
+   * synchronous `execFileSync` — this runs on a timer and must not block the
+   * extension host), keep the related sessions that are ringing *except* the
+   * current one (front-of-house owns that, so excluding it prevents a double
+   * notification), and notify on the `0->1` edges. `detectBellEdges` advances
+   * the edge memory (`active`); `notifyBell` owns the cooldown (`lastNotifiedAt`)
+   * — so only the edge memory is reflected here, and `notifyBell` re-gates on the
+   * same prior cooldown before firing (reflecting the edge detector's cooldown
+   * too would make `notifyBell` see the window as just-notified and suppress it).
+   */
+  private pollBackgroundBells(): void {
+    const baseName = currentBaseName();
+    if (!baseName) {
+      return;
+    }
+    execFile(
+      'tmux',
+      ['list-windows', '-a', '-F', '#{session_name}\t#{window_bell_flag}'],
+      { encoding: 'utf8' },
+      (err, stdout) => {
+        if (err) {
+          // No tmux server, or tmux vanished — let the next cycle retry rather
+          // than tearing the poller down.
+          return;
+        }
+        const belling = parseBellingSessions(stdout).filter(
+          (name) => name !== this.currentSession && isRelatedSession(baseName, name),
+        );
+        const { toNotify, nextState } = detectBellEdges(this.bellState, belling, Date.now());
+        // Take only the advanced edge memory; keep the existing cooldown so
+        // notifyBell (the single owner of lastNotifiedAt) decides and records it.
+        this.bellState = { active: nextState.active, lastNotifiedAt: this.bellState.lastNotifiedAt };
+        for (const session of toNotify) {
+          this.notifyBell(session).catch((e) => console.error('Failed to notify on bell', e));
+        }
+      },
+    );
   }
 
   pushFontConfig(): void {
@@ -395,6 +900,9 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       strings: {
         noSession: vscode.l10n.t('No session'),
         newSession: vscode.l10n.t('New Session'),
+        // The default view shown when no session is running.
+        noActiveSession: vscode.l10n.t('No active session'),
+        startNewSessionHint: vscode.l10n.t('Start a tmux session to get going.'),
         configureProfiles: vscode.l10n.t('Configure Profiles...'),
         killSession: vscode.l10n.t('Kill session'),
         // {0} is a session name.
@@ -425,14 +933,16 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   pushSessions(): void {
     const baseName = currentBaseName();
-    if (!baseName || !this.view) {
-      return;
+    if (baseName && this.view) {
+      const related = relatedSessions(baseName, listTmuxSessions());
+      this.view.webview.postMessage({
+        type: 'sessions',
+        sessions: related.map((s) => ({ name: s.name, attached: s.attached, current: s.name === this.currentSession })),
+      });
     }
-    const related = relatedSessions(baseName, listTmuxSessions());
-    this.view.webview.postMessage({
-      type: 'sessions',
-      sessions: related.map((s) => ({ name: s.name, attached: s.attached, current: s.name === this.currentSession })),
-    });
+    // The session set or current session may have just changed, so re-evaluate
+    // whether the background poller should be running.
+    this.updateBellPolling();
   }
 
   /**
@@ -452,7 +962,9 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   /**
    * Move off `name` onto whatever is now at the top of the list. Nothing left
    * means nothing to attach to — never recreate the session we just left, or
-   * killing/exiting the last session would be impossible.
+   * killing/exiting the last session would be impossible. With no session
+   * left, show the default view (carrying the kill/end notice) rather than
+   * silently auto-spawning a fresh one.
    */
   private async attachNextAfter(name: string, verb: 'killed' | 'ended'): Promise<void> {
     if (!this.view) {
@@ -467,22 +979,47 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       verb === 'killed'
         ? vscode.l10n.t('Session "{0}" killed.', name)
         : vscode.l10n.t('Session "{0}" ended.', name);
-    this.view.webview.postMessage({ type: 'info', text: `${text}\r\n` });
+    this.showDefaultView(text);
     this.pushSessions();
+  }
+
+  /**
+   * Ask the webview to swap the terminal out for its own default screen (a
+   * "no session" message plus a New Session button). Never reveals or focuses
+   * the view — it is neither an attach nor a focus move, so it can't steal
+   * focus from the editor. `notice` optionally carries a kill/end line to show
+   * above the message.
+   */
+  private showDefaultView(notice?: string): void {
+    this.view?.webview.postMessage({ type: 'defaultView', notice });
   }
 
   /**
    * Called when the webview signals it is ready. Attaches to whatever the
    * sidebar shows at the top, so opening the view lands you in a terminal
    * instead of an empty pane. `currentSession` survives a webview reload
-   * while the extension host stays alive, so prefer it when set.
+   * while the extension host stays alive, so prefer it when set. With no
+   * related session at all we do NOT fall back to the base name (that silently
+   * spawned a session on every open) — we show the default view instead.
    */
   private async attachInitialSession(): Promise<void> {
     const baseName = currentBaseName();
     if (!baseName) {
       return;
     }
-    await this.attachSession(this.currentSession ?? this.firstRelatedSession() ?? baseName);
+    const target = this.currentSession ?? this.firstRelatedSession();
+    if (target) {
+      await this.attachSession(target);
+      return;
+    }
+    // No session to attach to. If tmux itself is missing, say so — a default
+    // view offering a New Session button that can't work would mislead.
+    // Otherwise show the default view instead of auto-creating a session.
+    if (!tmuxIsInstalled()) {
+      await this.reportTmuxMissing(false);
+      return;
+    }
+    this.showDefaultView();
   }
 
   async openNewSession(profile?: TmuxProfile): Promise<void> {
@@ -645,6 +1182,9 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.ptyProcess = proc;
     // A session started, so tmux is present now; let a future disappearance warn.
     this.warnedTmuxMissing = false;
+    // A tmux server exists now — enable bell monitoring so background windows
+    // set window_bell_flag for the poller to read (once; idempotent).
+    this.enableMonitorBell();
 
     // The webview's last known fit may be stale (first load, or the panel
     // was resized while a different session was showing) — ask it to
@@ -754,6 +1294,14 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   dispose(): void {
+    // Stop the background bell poller so its timer can't outlive the provider.
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
+    // Same discipline for the bell-outcome timers (#81): settle every pending
+    // bell as `unknown` so none of them survives the provider.
+    this.settleAllSoundAcks();
     // Clear the field before killing: onExit only acts on the pty still
     // installed, so this stops the exit from being mistaken for a session
     // ending on its own and respawning tmux as the extension shuts down.
@@ -774,6 +1322,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     const addonWebglJs = mediaXterm('addon-webgl.js');
     const addonClipboardJs = mediaXterm('addon-clipboard.js');
     const keymapUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-keymap.js'));
+    const soundUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-sound.js'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-terminal.js'));
     const codiconCss = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css'),
@@ -984,6 +1533,61 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
      glyphs after scrolling) and has been removed; #terminal just needs to
      be an unpadded box with a real height for FitAddon to measure. */
   #terminal { flex: 1; min-height: 0; min-width: 0; }
+
+  /* Shown in place of the terminal when no session is running. Exclusive with
+     #terminal (JS toggles display), so the terminal instance keeps existing
+     for the next attach — this is just what fills the pane meanwhile. Simple,
+     centered, VS Code welcome-view tone; deliberately undecorated. */
+  #default-view {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 12px;
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  #default-view.visible { display: flex; }
+  #default-view .notice {
+    margin: 0;
+    max-width: 280px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  }
+  #default-view .message {
+    margin: 0;
+    max-width: 280px;
+    color: var(--vscode-foreground);
+  }
+  #default-view .hint {
+    margin: 0;
+    max-width: 280px;
+    font-size: 12px;
+    opacity: 0.8;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  }
+  #default-view-new {
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 18px;
+    padding: 4px 14px;
+    border: 1px solid var(--vscode-button-border, transparent);
+    border-radius: 2px;
+    color: var(--vscode-button-foreground, #ffffff);
+    background: var(--vscode-button-background, #0e639c);
+    cursor: pointer;
+  }
+  #default-view-new:hover {
+    background: var(--vscode-button-hoverBackground, var(--vscode-button-background, #1177bb));
+  }
+  #default-view-new:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: 2px;
+  }
+
   #boot-error {
     display: none;
     padding: 8px;
@@ -1053,6 +1657,12 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 <div id="main">
 <div id="terminal-wrap">
   <div id="terminal"></div>
+  <div id="default-view">
+    <p id="default-view-notice" class="notice"></p>
+    <p id="default-view-message" class="message">${t('No active session')}</p>
+    <button id="default-view-new" type="button">${t('New Session')}</button>
+    <p id="default-view-hint" class="hint">${t('Start a tmux session to get going.')}</p>
+  </div>
   <div id="boot-error"></div>
   <div id="findbar">
     <input id="findInput" type="text" placeholder="${t('Find')}">
@@ -1075,6 +1685,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 <script src="${addonWebglJs}"></script>
 <script src="${addonClipboardJs}"></script>
 <script src="${keymapUri}"></script>
+<script src="${soundUri}"></script>
 <script src="${scriptUri}"></script>
 </body>
 </html>`;

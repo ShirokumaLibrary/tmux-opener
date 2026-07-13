@@ -3,7 +3,7 @@
   "displayName": "Tmux Opener",
   "description": "%extension.description%",
   "l10n": "./l10n",
-  "version": "0.0.2",
+  "version": "0.0.5",
   "publisher": "shirokuma-library",
   "license": "MIT",
   "repository": {
@@ -143,6 +143,64 @@
     "configuration": {
       "title": "Tmux Opener",
       "properties": {
+        "tmuxOpener.notifyOnBell": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.notifyOnBell%"
+        },
+        "tmuxOpener.notifySound": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.notifySound%"
+        },
+        "tmuxOpener.notifyToast": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.notifyToast%"
+        },
+        "tmuxOpener.notifySoundPreset": {
+          "type": "string",
+          "default": "classic",
+          "enum": [
+            "classic",
+            "siren",
+            "sos",
+            "cascade",
+            "trill"
+          ],
+          "enumDescriptions": [
+            "%config.notifySoundPreset.classic%",
+            "%config.notifySoundPreset.siren%",
+            "%config.notifySoundPreset.sos%",
+            "%config.notifySoundPreset.cascade%",
+            "%config.notifySoundPreset.trill%"
+          ],
+          "description": "%config.notifySoundPreset%"
+        },
+        "tmuxOpener.notifySoundPresetOnAsk": {
+          "type": "string",
+          "default": "siren",
+          "enum": [
+            "classic",
+            "siren",
+            "sos",
+            "cascade",
+            "trill"
+          ],
+          "enumDescriptions": [
+            "%config.notifySoundPreset.classic%",
+            "%config.notifySoundPreset.siren%",
+            "%config.notifySoundPreset.sos%",
+            "%config.notifySoundPreset.cascade%",
+            "%config.notifySoundPreset.trill%"
+          ],
+          "description": "%config.notifySoundPresetOnAsk%"
+        },
+        "tmuxOpener.notifyBridgeStatusline": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.notifyBridgeStatusline%"
+        },
         "tmuxOpener.terminal.fontFamily": {
           "type": "string",
           "default": "",
@@ -199,7 +257,8 @@
     "test": "node --test test/*.test.js",
     "package": "node scripts/esbuild.js --production && node scripts/copy-webview-assets.js",
     "vsix": "mkdir -p out && vsce package --dependencies --out out/",
-    "vsix:all": "bash scripts/package-all.sh"
+    "vsix:all": "bash scripts/package-all.sh",
+    "claude:install": "bash scripts/install-claude.sh"
   },
   "dependencies": {
     "node-pty": "^1.1.0"

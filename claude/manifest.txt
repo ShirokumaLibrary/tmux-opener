@@ -1,0 +1,12 @@
+# Files that scripts/install-claude.sh installs into ~/.claude.
+# One path per line, relative to claude/. '#' comments and blank lines are ignored.
+#
+# This list is only needed by the http(s) remote install path, which cannot list
+# a directory. The clone install (find) and the gh: install (contents API)
+# enumerate the *.sh files live, so they never read this file — but the clone
+# install warns if this list drifts from the actual *.sh set, so keep it in sync
+# whenever you add or remove a script under claude/.
+statusline.sh
+hooks/session-state.sh
+hooks/subagent-idle-gate.sh
+hooks/tmux-opener-bell.sh
