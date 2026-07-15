@@ -19,7 +19,8 @@ survive being detached, reattached, or reopened after a window reload.
 Open the **Tmux** view from the Secondary Side Bar (the right-hand panel).
 
 - The toolbar at the top shows the current session name, a `+ ⌄` button to
-  create sessions, and actions to show/hide the session list, kill the current
+  create sessions, and actions to toggle the notification sound
+  (`tmuxOpener.notifySound`), show/hide the session list, kill the current
   session, and open settings.
 - The session list on the right works like VS Code's terminal tabs: click a
   session to switch to it, click **×** (or middle-click) to kill it, drag its

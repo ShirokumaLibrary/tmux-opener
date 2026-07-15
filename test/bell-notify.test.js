@@ -16,6 +16,8 @@ const {
   soundOutcomeFor,
   shouldTrackSoundAck,
   shouldOfferSoundUnlock,
+  decideNotifySoundToggle,
+  resolveNotifySoundToggleScope,
 } = require('../src/bell-notify.ts');
 
 // The bell *reason* half of notifyBell (#47/#64) lives in status-bridge; the
@@ -614,5 +616,70 @@ test('#109 (prescribed): with the hooks as the only BEL source, no verdict rides
   assert.strictEqual(
     resolveBellReason({ ...prescribed.preSettle, now: bellAt }),
     'ask',
+  );
+});
+
+// --- Toolbar notification-sound toggle (#127) ---------------------------------
+// The toolbar bell button flips `tmuxOpener.notifySound`. The only non-trivial
+// rule is which edge rings a one-shot confirmation, so it lives in a pure
+// function and is pinned here.
+
+test('#127: toggling OFF->ON flips to on and rings a confirmation', () => {
+  // Turning the sound ON is exactly when the user wants to learn the audio path
+  // works, so this edge — and only this edge — plays the one-shot confirmation.
+  assert.deepStrictEqual(decideNotifySoundToggle(false), {
+    next: true,
+    playConfirmation: true,
+  });
+});
+
+test('#127: toggling ON->OFF flips to off and stays silent', () => {
+  // Turning the sound OFF must not itself make a sound.
+  assert.deepStrictEqual(decideNotifySoundToggle(true), {
+    next: false,
+    playConfirmation: false,
+  });
+});
+
+// The toggle must write back to whichever scope currently *wins*, or the flip
+// wouldn't change the effective value and the button would be a stuck no-op —
+// the exact failure a `.vscode/settings.json` override reproduced. Priority is
+// folder > workspace > global > default (VS Code's resolution order).
+test('#127: toggle writes Global when only the default applies', () => {
+  assert.strictEqual(resolveNotifySoundToggleScope(undefined), 'global');
+  assert.strictEqual(resolveNotifySoundToggleScope({}), 'global');
+});
+
+test('#127: toggle writes Global when only a global value is set', () => {
+  assert.strictEqual(resolveNotifySoundToggleScope({ globalValue: false }), 'global');
+});
+
+test('#127: a workspace override wins, so the toggle writes Workspace', () => {
+  // Global loses to the workspace override; writing Global would leave the
+  // effective value unchanged (the stuck no-op). Write where the value lives.
+  assert.strictEqual(
+    resolveNotifySoundToggleScope({ globalValue: true, workspaceValue: false }),
+    'workspace',
+  );
+});
+
+test('#127: a workspace-folder override wins over workspace and global', () => {
+  assert.strictEqual(
+    resolveNotifySoundToggleScope({
+      globalValue: true,
+      workspaceValue: true,
+      workspaceFolderValue: false,
+    }),
+    'workspaceFolder',
+  );
+});
+
+test('#127: a `false` override is still a set value, not treated as absent', () => {
+  // The guard is `!== undefined`, so `false` (the muting override the bug
+  // report hinged on) selects its scope rather than falling through to Global.
+  assert.strictEqual(resolveNotifySoundToggleScope({ workspaceValue: false }), 'workspace');
+  assert.strictEqual(
+    resolveNotifySoundToggleScope({ workspaceFolderValue: false }),
+    'workspaceFolder',
   );
 });

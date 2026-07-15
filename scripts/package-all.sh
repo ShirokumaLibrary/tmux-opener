@@ -72,11 +72,18 @@ else
   # against the same package-lock.json and compiles pty.node for its own arch.
   # It runs as the host user so out/*.vsix does not come back owned by root.
   # ./tmp is the sparse vscode clone kept for reference — big, and not needed.
+  #
+  # GOMAXPROCS=1: esbuild's Go binary crashes under qemu-x86_64 user-mode
+  # emulation on an arm64 host ("fatal error: lfstack.push", a goroutine
+  # scheduler/GC worker panic) when it runs multi-threaded. Forcing the Go
+  # runtime single-threaded avoids the qemu atomics bug that triggers it.
+  # Native amd64 hosts are unaffected; this only matters under emulation.
   tar -c --exclude=./node_modules --exclude=./out --exclude=./.git --exclude=./tmp -C "$ROOT" . |
     docker run --rm -i \
       --platform "$DOCKER_PLATFORM" \
       -u "$(id -u):$(id -g)" \
       -e HOME=/tmp \
+      -e GOMAXPROCS=1 \
       -v "$ROOT/out:/out" \
       node:20-bookworm \
       bash -euo pipefail -c '

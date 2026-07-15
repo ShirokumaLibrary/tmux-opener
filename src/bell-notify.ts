@@ -232,6 +232,58 @@ export function shouldOfferSoundUnlock(
 }
 
 /**
+ * Decide the outcome of a toolbar toggle of `tmuxOpener.notifySound` (#127).
+ * The next value is the negation of the current one; a one-shot confirmation
+ * sound rings only on the OFF->ON edge — turning the sound *on* is exactly when
+ * the user wants to learn the audio path actually works (the context may still
+ * be suspended), whereas turning it *off* must itself stay silent. Pure over the
+ * current boolean so the edge rule is testable without the VS Code API.
+ */
+export function decideNotifySoundToggle(current: boolean): {
+  next: boolean;
+  playConfirmation: boolean;
+} {
+  const next = !current;
+  return { next, playConfirmation: next };
+}
+
+/** Which configuration scope a toolbar toggle writes back to (#127). */
+export type NotifySoundToggleScope = 'workspaceFolder' | 'workspace' | 'global';
+
+/**
+ * Which scope a toolbar toggle of `tmuxOpener.notifySound` must write to for the
+ * flip to actually change the *effective* value (#127). The toolbar reads the
+ * effective value (workspace/folder overrides included) and negates it, so it has
+ * to write the negation to whichever scope currently *wins* — the highest-priority
+ * scope that already has a value set — falling back to Global when only the
+ * default applies. Writing to Global while a workspace/folder override stands
+ * would leave the effective value unchanged: `onDidChangeConfiguration` never
+ * fires, the button never echoes, and the toggle is a stuck no-op (the exact
+ * failure a `.vscode/settings.json` "tmuxOpener.notifySound": false reproduces).
+ * VS Code resolves in the order folder > workspace > global > default, so the
+ * winning scope is the first defined one in that order. Pure over the `inspect()`
+ * shape so the rule is testable without the VS Code API; the caller maps the
+ * token to a `ConfigurationTarget`.
+ */
+export function resolveNotifySoundToggleScope(
+  inspect:
+    | {
+        globalValue?: boolean;
+        workspaceValue?: boolean;
+        workspaceFolderValue?: boolean;
+      }
+    | undefined,
+): NotifySoundToggleScope {
+  if (inspect?.workspaceFolderValue !== undefined) {
+    return 'workspaceFolder';
+  }
+  if (inspect?.workspaceValue !== undefined) {
+    return 'workspace';
+  }
+  return 'global';
+}
+
+/**
  * Front path (xterm `onBell`, single session): cooldown only, no edge
  * detection — a live terminal fires `onBell` per event, so a bare cooldown is
  * enough to keep bursts from flooding. Returns whether to notify and the next

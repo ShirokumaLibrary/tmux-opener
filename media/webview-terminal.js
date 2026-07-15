@@ -318,6 +318,8 @@
     killSession: 'Kill session',
     attachedElsewhere: '{0} (attached elsewhere)',
     notFoundOnPath: '"{0}" was not found on PATH',
+    notifySoundOn: 'Notification sound: on',
+    notifySoundOff: 'Notification sound: off',
   };
   const format = (template, value) => template.replace('{0}', value);
 
@@ -464,6 +466,35 @@
   document.getElementById('openSettings').addEventListener('click', () => {
     closeContextMenu();
     vscodeApi.postMessage({ type: 'openSettings' });
+  });
+
+  // The toolbar bell toggle for tmuxOpener.notifySound (#127). The webview has no
+  // Configuration API, so the click only *asks* the host to flip the setting; the
+  // host is the source of truth and echoes the new value back through the `config`
+  // message (applyNotifySoundState), which is what actually updates the icon —
+  // so the button always mirrors the persisted setting, including a change made
+  // from the Settings UI. The one-shot confirmation sound on OFF->ON is played by
+  // the host (this click is the user gesture that arms audio; unlockAudio's
+  // window-level capture listener already resumed the context off the same
+  // pointerdown/keydown).
+  const notifySoundBtn = document.getElementById('toggleNotifySound');
+  const notifySoundIcon = notifySoundBtn.querySelector('.codicon');
+  // Unknown until the first `config` message lands (#127). The HTML placeholder
+  // renders the safe (off) state — a muted bell that turns out enabled is a
+  // harmless correction, whereas showing an enabled bell that is really muted
+  // would misrepresent the setting. Nothing here asserts a definitive state
+  // before the host echoes the real value.
+  let notifySoundEnabled;
+  function applyNotifySoundState(enabled) {
+    notifySoundEnabled = enabled;
+    notifySoundIcon.classList.toggle('codicon-bell', enabled);
+    notifySoundIcon.classList.toggle('codicon-bell-slash', !enabled);
+    notifySoundBtn.setAttribute('aria-pressed', String(enabled));
+    notifySoundBtn.title = enabled ? strings.notifySoundOn : strings.notifySoundOff;
+  }
+  notifySoundBtn.addEventListener('click', () => {
+    closeContextMenu();
+    vscodeApi.postMessage({ type: 'toggleNotifySound' });
   });
   window.addEventListener('mousedown', (e) => {
     if (!contextMenu.contains(e.target)) {
@@ -1025,6 +1056,9 @@
     } else if (msg.type === 'defaultView') {
       showDefaultView(msg.notice);
     } else if (msg.type === 'config') {
+      if (msg.notifySound !== undefined) {
+        applyNotifySoundState(msg.notifySound);
+      }
       applyFontConfig(msg);
     } else if (msg.type === 'requestResize') {
       fitAndNotify();
@@ -1043,6 +1077,13 @@
     if (msg.type === 'l10n') {
       strings = msg.strings;
       applyDefaultViewStrings();
+      // The bell toggle's title comes from `strings`, so refresh it for the
+      // current state now that the translations have landed (#127) — but only
+      // once the state is known, so an l10n message arriving before the first
+      // `config` can't assert a wrong (on/off) state.
+      if (notifySoundEnabled !== undefined) {
+        applyNotifySoundState(notifySoundEnabled);
+      }
       return;
     }
     if (msg.type === 'profiles') {
@@ -1059,6 +1100,9 @@
       return;
     }
     if (msg.type === 'config' && !ready) {
+      if (msg.notifySound !== undefined) {
+        applyNotifySoundState(msg.notifySound);
+      }
       initTerminal(msg);
       return;
     }

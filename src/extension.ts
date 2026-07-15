@@ -25,9 +25,11 @@ import {
 } from './session-name.js';
 import {
   bellNotificationSurfaces,
+  decideNotifySoundToggle,
   detectBellEdges,
   initialBellState,
   parseBellingSessions,
+  resolveNotifySoundToggleScope,
   shouldNotifySession,
   shouldOfferSoundUnlock,
   shouldTrackSoundAck,
@@ -407,6 +409,15 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    * tmux that later disappears warns afresh.
    */
   private warnedTmuxMissing = false;
+  /**
+   * Serializes toolbar toggles of `tmuxOpener.notifySound` (#127). `config.get`
+   * lags an in-flight `config.update` (a slow round trip under Remote-SSH), so
+   * two quick clicks could both read the old value, compute the same `next`, and
+   * net a lost or inverted toggle. While one toggle's `update` is in flight we
+   * drop further requests: the button's state only advances on the echo, so a
+   * dropped click is a no-op the user simply repeats, never a corrupted write.
+   */
+  private notifySoundToggleInFlight = false;
 
   constructor(private readonly extensionUri: vscode.Uri) {
     this.viewReady = new Promise((resolve) => {
@@ -458,7 +469,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       this.ptyProcess?.resize(message.cols, message.rows);
     } else if (message.type === 'ready') {
       this.pushL10n();
-      this.pushFontConfig();
+      this.pushWebviewConfig();
       this.pushProfiles();
       this.pushSessions();
       void this.attachInitialSession();
@@ -472,6 +483,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       void this.killCurrentSession();
     } else if (message.type === 'openSettings') {
       void vscode.commands.executeCommand('tmux-opener.openSettings');
+    } else if (message.type === 'toggleNotifySound') {
+      void this.toggleNotifySound();
     } else if (message.type === 'killSession' && message.name) {
       void this.killSession(message.name);
     } else if (message.type === 'copy' && message.text) {
@@ -924,8 +937,62 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     );
   }
 
-  pushFontConfig(): void {
-    this.view?.webview.postMessage({ type: 'config', ...getTerminalFontConfig() });
+  pushWebviewConfig(): void {
+    // The `config` message is the webview's general config channel: it carries
+    // the font (its original job) and the toolbar bell toggle's state (#127), so
+    // the button reflects `tmuxOpener.notifySound` on first render and on any
+    // later change — including one made from the Settings UI, which
+    // `onDidChangeConfiguration` (in activate) re-pushes through here.
+    const notifySound = vscode.workspace
+      .getConfiguration('tmuxOpener')
+      .get<boolean>('notifySound', true);
+    this.view?.webview.postMessage({ type: 'config', ...getTerminalFontConfig(), notifySound });
+  }
+
+  /**
+   * Flip `tmuxOpener.notifySound` from the toolbar bell button (#127). The
+   * webview owns no Configuration API, so it asks the host to toggle; the host is
+   * the source of truth, reads the current value and negates it. On the OFF->ON
+   * edge only (`decideNotifySoundToggle`), it rings a one-shot confirmation so
+   * the user learns the audio path actually works — the toolbar click is itself
+   * the user gesture that arms the Window's sticky activation, and the replay is
+   * marked `userInitiated` so it is exempt from RESUME_GRACE_MS (CLAUDE.md's
+   * audio invariants). The updated value flows back to the button via
+   * `onDidChangeConfiguration` -> `pushWebviewConfig`.
+   *
+   * Two subtleties the naive "get effective, write Global" version got wrong:
+   * - It read the *effective* value but wrote to Global, so a workspace/folder
+   *   override made the toggle a stuck no-op (Global loses to the override, the
+   *   effective value never changes, no echo fires). We write to whichever scope
+   *   actually wins (`resolveNotifySoundToggleScope`) so the flip always lands.
+   * - It derived `next` from a value that lags an in-flight update, so concurrent
+   *   clicks could drop or invert a toggle. `notifySoundToggleInFlight` serializes
+   *   them.
+   */
+  private async toggleNotifySound(): Promise<void> {
+    if (this.notifySoundToggleInFlight) {
+      return;
+    }
+    this.notifySoundToggleInFlight = true;
+    try {
+      const config = vscode.workspace.getConfiguration('tmuxOpener');
+      const current = config.get<boolean>('notifySound', true);
+      const { next, playConfirmation } = decideNotifySoundToggle(current);
+      const scope = resolveNotifySoundToggleScope(config.inspect<boolean>('notifySound'));
+      const target =
+        scope === 'workspaceFolder'
+          ? vscode.ConfigurationTarget.WorkspaceFolder
+          : scope === 'workspace'
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global;
+      await config.update('notifySound', next, target);
+      if (playConfirmation) {
+        const preset = config.get<string>('notifySoundPreset', 'classic');
+        void this.postPlaySound(preset, false, true);
+      }
+    } finally {
+      this.notifySoundToggleInFlight = false;
+    }
   }
 
   /**
@@ -943,6 +1010,11 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
         startNewSessionHint: vscode.l10n.t('Start a tmux session to get going.'),
         configureProfiles: vscode.l10n.t('Configure Profiles...'),
         killSession: vscode.l10n.t('Kill session'),
+        // The toolbar bell toggle's title, swapped by the webview as the state
+        // changes (#127). Two strings, not one, because the title states the
+        // current state rather than the action.
+        notifySoundOn: vscode.l10n.t('Notification sound: on'),
+        notifySoundOff: vscode.l10n.t('Notification sound: off'),
         // {0} is a session name.
         attachedElsewhere: vscode.l10n.t('{0} (attached elsewhere)', '{0}'),
         // {0} is a shell command.
@@ -1682,6 +1754,9 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       <span class="codicon codicon-chevron-down"></span>
     </div>
   </div>
+  <div class="toolbar-action" id="toggleNotifySound" role="button" aria-pressed="false" title="${t('Notification sound: off')}">
+    <span class="codicon codicon-bell-slash"></span>
+  </div>
   <div class="toolbar-action" id="toggleSidebar" title="${t('Toggle Session List')}">
     <span class="codicon codicon-list-selection"></span>
   </div>
@@ -1823,11 +1898,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('tmuxOpener.terminal')) {
-      terminalProvider.pushFontConfig();
+      terminalProvider.pushWebviewConfig();
     }
     if (e.affectsConfiguration('tmuxOpener.profiles')) {
       void updateProfileContexts();
       terminalProvider.pushProfiles();
+    }
+    // Keep the toolbar bell toggle in step with a change made from the Settings
+    // UI (#127): the notifySound state rides the same `config` message.
+    if (e.affectsConfiguration('tmuxOpener.notifySound')) {
+      terminalProvider.pushWebviewConfig();
     }
   });
 
