@@ -25,12 +25,12 @@
 # Effect:
 #   - Renders a statusline with an emoji marker per segment so each one reads at
 #     a glance. Line 1: ⠋/✅ working-or-idle (a spinner while working), 🤖 model
-#     (+ 🎚️ reasoning effort), 📁 dir, 🌿 git branch with its state (↑ahead
+#     (+ 🔆 reasoning effort), 📁 dir, 🌿 git branch with its state (↑ahead
 #     ↓behind; ✚ uncommitted changes to tracked files; … untracked files — two
 #     markers, not one, because ✚ means "commit this" and … usually means
 #     "nothing to do", and a repo that keeps files untracked on purpose would
 #     otherwise light ✚ forever). Line 2: 🧠 color-coded context-usage bar
-#     (+ token count), 💰 cost, ⏱️ elapsed time (45s / 12m /
+#     (+ token count), 💰 cost, ⏰ elapsed time (45s / 12m /
 #     2h 3m). The bars are ten cells of eighths — █ full, ▏▎▍▌▋▊▉ for the
 #     partial cell — so ten columns carry 80 steps (1.25% each) instead of 10.
 #     The empty groove is a bright-black *background* (a palette color, so it
@@ -38,8 +38,8 @@
 #     part-inked partial cell. Lines 3-4 appear only
 #     when the fields behind them are present, so a
 #     plan or a Claude Code version that doesn't report them costs no blank
-#     lines: ⏳/📅 rate-limit usage; 💭 thinking, 🌳 worktree, ⌨️ vim mode,
-#     🧑‍💻 agent, 🏷️ session name.
+#     lines: ⏳/📅 rate-limit usage; 💭 thinking, 🌳 worktree, 📝 vim mode,
+#     👤 agent, 🔖 session name.
 #   - When running inside a tmux session, writes a bridge JSON into the cache so
 #     the tmux-opener extension can reflect it in the bell notification. The
 #     bridge write is best-effort: if any step fails it is skipped, and the
@@ -416,7 +416,7 @@ render_bar() {
 }
 
 # fmt_elapsed <seconds> -> 45s / 12m / 2h 3m — the unit follows the magnitude.
-# A session that has run for two hours used to print `⏱️ 7384s`, a number nobody
+# A session that has run for two hours used to print `⏰ 7384s`, a number nobody
 # converts in their head, so the digits were there and the duration wasn't.
 #
 # The space in `2h 3m` separates the two units so the eye doesn't read `2h3m` as one
@@ -559,6 +559,53 @@ case "$run_state" in
   *)       indicator="${esc}[2m○${esc}[0m" ;;
 esac
 
+# --- emoji width invariant: every segment marker must render at a KNOWN width ---
+# A statusline lays segments out by counting cells. A marker whose *displayed*
+# width depends on the terminal — 1 cell here, 2 there — shifts everything after
+# it, so the picture the script drew and the picture on screen disagree. That is
+# the same class of confident-wrong-answer this script refuses everywhere else,
+# and it is worse here because it corrupts a *neighbouring* segment's alignment,
+# not just its own cell. Three Unicode properties decide whether a marker's width
+# is knowable, and a marker is only allowed if all three say "fixed":
+#
+#   1. Emoji_Presentation + VS16 (U+FE0F). A base codepoint with
+#      Emoji_Presentation=No is a *text-default* symbol (intrinsically 1 cell,
+#      East_Asian_Width Neutral/Ambiguous); emoji (2-cell colour) presentation is
+#      then only *requested* by a trailing VS16. Terminals disagree on VS16: some
+#      advance 2 cells, some advance 1 while still painting a 2-cell glyph — and
+#      that last case is the visible overlap. So a `<base>+U+FE0F` marker has NO
+#      fixed width. Use a base codepoint whose Emoji_Presentation is already Yes
+#      (2 cells with no VS16, agreed by essentially every terminal) instead.
+#      This is the LEVEL SLIDER (U+1F39A U+FE0F) bug that prompted #125.
+#   2. ZWJ sequences (contain U+200D). A joined sequence (🧑+ZWJ+💻) renders as one
+#      2-cell glyph ONLY where the terminal ships that exact sequence; elsewhere it
+#      falls back to the components side by side (up to 4 cells) or a ZWJ tofu. No
+#      fixed width — use a single-codepoint emoji.
+#   3. East_Asian_Width=Ambiguous. A char with EAW=A is 1 cell in a Latin context
+#      but 2 under a terminal set to "ambiguous=wide" (common in CJK locales). The
+#      ↑ ↓ … markers below are EAW=A, kept deliberately as intended-narrow ASCII-
+#      class glyphs; they ride the branch segment (line's end), so a locale that
+#      widens them costs only trailing space, never a mid-line shift. Don't put an
+#      EAW=A char *before* another segment.
+#
+# The SAFE set is therefore: single codepoint, Emoji_Presentation=Yes, no VS16,
+# no ZWJ (wcwidth==2, terminal-agnostic). Every 🟢 marker on lines 1-4 is in it —
+# ✅ 🤖 🔆 📁 🌿 🧠 💰 ⏰ ⏳ 📅 💭 🌳 📝 👤 🔖. The five that were NOT — LEVEL SLIDER
+# (U+1F39A), STOPWATCH (U+23F1), KEYBOARD (U+2328) and LABEL (U+1F3F7), each via a
+# trailing VS16; and ADULT+ZWJ+COMPUTER (U+1F9D1 U+200D U+1F4BB) — were replaced in
+# #125; keep new markers in the SAFE set.
+# test/statusline.test.js (describe 'claude/statusline.sh emoji width') guards this
+# by asserting the file carries no U+FE0F and no U+200D at all — which is why this
+# comment names them positionally (U+FE0F / U+200D) rather than pasting the literal
+# bytes.
+#
+# NOTE ON VERIFICATION: this criterion rests on documented Unicode properties and
+# the reference `wcwidth` table (the model most terminals and layout libraries
+# approximate), NOT on observing these glyphs in GNOME Terminal / iTerm2 / the VS
+# Code terminal. The Bash tool's stdout is a capture file, not a tty (see
+# CLAUDE.md "Verifying the bell"), so the *on-screen* look was not measured here.
+# The property-based rule is sound; the pixel-level appearance is unverified.
+#
 # --- line 1: indicator / model (+ reasoning effort) / dir / branch ---
 line1="${indicator}  🤖 ${esc}[1m${model}${esc}[0m"
 if [ -n "$effort" ]; then
@@ -570,7 +617,7 @@ if [ -n "$effort" ]; then
     max)    ec=31 ;;
     *)      ec=37 ;;
   esac
-  line1="${line1} ${esc}[${ec}m🎚️${effort}${esc}[0m"
+  line1="${line1} ${esc}[${ec}m🔆${effort}${esc}[0m"
 fi
 line1="${line1}  📁 ${esc}[36m${dirname}${esc}[0m"
 
@@ -638,7 +685,7 @@ elapsed=$(fmt_elapsed "$(( dur_int / 1000 ))")
 
 ctxseg=""
 [ -n "$bar" ] && ctxseg="🧠 ${bar}  "
-line2="${ctxseg}💰 \$$(printf '%.2f' "$cost")  ⏱️ ${elapsed}"
+line2="${ctxseg}💰 \$$(printf '%.2f' "$cost")  ⏰ ${elapsed}"
 
 # --- line 3: rate-limit usage (subscription plans only; absent otherwise) ---
 line3=""
@@ -669,9 +716,9 @@ case "$thinking" in
   false) extras+=("${esc}[2m💭OFF${esc}[0m") ;;
 esac
 [ -n "$worktree" ] && extras+=("🌳 ${worktree}")
-[ -n "$vim_mode" ] && extras+=("⌨️ ${vim_mode}")
-[ -n "$agent_name" ] && extras+=("🧑‍💻 ${agent_name}")
-[ -n "$session_name" ] && extras+=("🏷️ “${session_name}”")
+[ -n "$vim_mode" ] && extras+=("📝 ${vim_mode}")
+[ -n "$agent_name" ] && extras+=("👤 ${agent_name}")
+[ -n "$session_name" ] && extras+=("🔖 “${session_name}”")
 
 line4=""
 for part in "${extras[@]+"${extras[@]}"}"; do

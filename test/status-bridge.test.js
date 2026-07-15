@@ -19,6 +19,9 @@ const {
   statusFilePath,
   bellReasonFilePath,
   resolveBellReason,
+  ASK_NOTIFICATION_TYPES,
+  isApprovalNotificationType,
+  shouldSettleBell,
   selectPreset,
   selectToastMessageKey,
   TOAST_DEFAULT,
@@ -183,6 +186,111 @@ test('resolveBellReason ④: both fresh beyond cofire uses the newer mtime', () 
   );
 });
 
+test('ASK_NOTIFICATION_TYPES is exactly the #108 matcher set', () => {
+  // The single source of truth for the "a human is waiting" notification types.
+  // MUST stay identical to the Notification matcher printed by
+  // scripts/install-claude.sh (`permission_prompt|agent_needs_input|elicitation_dialog`);
+  // the drift guard that ties this array to the actual printed matcher lives in
+  // test/install-claude-snippet.test.js.
+  assert.deepStrictEqual(ASK_NOTIFICATION_TYPES, [
+    'permission_prompt',
+    'agent_needs_input',
+    'elicitation_dialog',
+  ]);
+});
+
+test('isApprovalNotificationType recognizes only the human-waiting types', () => {
+  for (const t of ASK_NOTIFICATION_TYPES) {
+    assert.strictEqual(isApprovalNotificationType(t), true);
+  }
+  // Completion / non-waiting types and anything absent are not approval prompts.
+  for (const t of ['agent_completed', 'elicitation_complete', 'idle_prompt', 'auth_success', '']) {
+    assert.strictEqual(isApprovalNotificationType(t), false);
+  }
+  assert.strictEqual(isApprovalNotificationType(undefined), false);
+});
+
+test('resolveBellReason #116: a fresh, typed approval ask beats the co-fire tie-break', () => {
+  const now = 1_000_000;
+  // stop and ask land within BELL_COFIRE_MS of each other. Rule ③ alone (mtime
+  // only) would return 'stop' — the bug #116 fixes. With askType a recognizable
+  // approval type, ask is trusted instead, anywhere inside the co-fire window
+  // including identical mtimes. (Beyond the window the newer mtime decides — see
+  // the F-1 tests below.)
+  for (const askType of ASK_NOTIFICATION_TYPES) {
+    assert.strictEqual(
+      resolveBellReason({ stopMtime: now, askMtime: now - 2_500, now, askType }),
+      'ask',
+    );
+    assert.strictEqual(
+      resolveBellReason({ stopMtime: now, askMtime: now, now, askType }),
+      'ask',
+    );
+  }
+});
+
+test('resolveBellReason #116: an unrecognized / absent type falls back to the mtime tie-break', () => {
+  const now = 1_000_000;
+  // A completion-type Notification (a matcher-less legacy wiring can still write
+  // one) or a missing type is NOT trusted, so the original rule ③ still wins for
+  // legacy users — their #75 protection is unchanged.
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: now, askMtime: now - 2_500, now, askType: 'agent_completed' }),
+    'stop',
+  );
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: now, askMtime: now - 2_500, now, askType: undefined }),
+    'stop',
+  );
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: now, askMtime: now - 2_500, now }),
+    'stop',
+  );
+});
+
+test('resolveBellReason #116: type cannot rescue an ask that is no longer fresh', () => {
+  const now = 1_000_000;
+  const stale = now - STATUS_FRESHNESS_MS - 1;
+  // The freshness gate stays load-bearing: a stale ask, even a genuinely typed
+  // approval prompt, is too old to be "now" — it does not override a fresh stop.
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: now, askMtime: stale, now, askType: 'permission_prompt' }),
+    'stop',
+  );
+  // And with neither fresh, it still falls back to the safe 'stop', type or not.
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: stale, askMtime: stale, now, askType: 'permission_prompt' }),
+    'stop',
+  );
+});
+
+test('resolveBellReason #116 (F-1): a typed ask far older than a newer stop yields stop', () => {
+  const now = 1_000_000;
+  // The regression F-1 fixes. A real approval prompt rang at t=0 (ask file typed),
+  // the human approved, and the *same* turn completed 25s later (a fresh stop).
+  // At that completion bell the ask file is still fresh (25s < 30s) and still
+  // carries `permission_prompt` — but the stop is 25s NEWER, far beyond the
+  // co-fire window, so the human clearly resolved the prompt. Trusting the type
+  // here would mis-play "waiting for your input" on a turn that just finished.
+  // The type is honored only *inside* the co-fire window; beyond it the newer
+  // mtime decides (rule ④), so this resolves 'stop'.
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: now, askMtime: now - 25_000, now, askType: 'permission_prompt' }),
+    'stop',
+  );
+});
+
+test('resolveBellReason #116 (F-1): a typed ask newer than an old stop, beyond cofire, still wins', () => {
+  const now = 1_000_000;
+  // The mirror case: the newer-mtime rule ④ resolves a genuinely separate ask on
+  // its own, without needing the type branch at all. stop is 10s old, the typed
+  // ask is now — gap > cofire, ask newer -> 'ask'.
+  assert.strictEqual(
+    resolveBellReason({ stopMtime: now - 10_000, askMtime: now, now, askType: 'permission_prompt' }),
+    'ask',
+  );
+});
+
 test('selectPreset returns the ask preset for ask, else the stop preset', () => {
   assert.strictEqual(selectPreset('ask', 'classic', 'siren'), 'siren');
   assert.strictEqual(selectPreset('stop', 'classic', 'siren'), 'classic');
@@ -222,4 +330,29 @@ test('selectToastMessageKey: fresh reason picks stop/ask wording', () => {
   assert.strictEqual(selectToastMessageKey(true, 'stop'), TOAST_STOP);
   assert.strictEqual(selectToastMessageKey(true, 'ask'), TOAST_ASK);
   assert.strictEqual(selectToastMessageKey(true, 'weird'), TOAST_STOP);
+});
+
+// @testdoc shouldSettleBell decides whether notifyBell waits BELL_SETTLE_MS and
+// re-reads the reason files (Issue #113). The gate is *existence*, not freshness:
+// the hooks only ever overwrite the reason files and never delete them, so a file
+// that exists at all — even one long past STATUS_FRESHNESS_MS — is a stable signal
+// that this session is bell-hook-wired, and settling for it lets a fresh reason the
+// hook writes around the BEL land before the reason is chosen. This is the cold
+// case the old freshness gate missed: a session idle past 30s whose approval
+// prompt's reason arrives milliseconds after a reason-less BEL.
+test('shouldSettleBell is true when either reason file exists, however stale', () => {
+  // A file's mtime is a number the moment the file exists; freshness is not tested
+  // here on purpose — a stale mtime (0, an epoch away from any plausible `now`)
+  // still means "the hook has written this session at least once".
+  assert.strictEqual(shouldSettleBell({ stopMtime: 0, askMtime: undefined }), true);
+  assert.strictEqual(shouldSettleBell({ stopMtime: undefined, askMtime: 0 }), true);
+  assert.strictEqual(shouldSettleBell({ stopMtime: 123, askMtime: 456 }), true);
+});
+
+test('shouldSettleBell is false only when neither reason file has ever existed', () => {
+  // The zero-latency invariant: a user without the bell-reason hooks (both mtimes
+  // undefined) — and the very first bell of any session, before any hook has
+  // written — must skip the settle entirely and keep the plain preset / neutral
+  // toast. This is the case #113 must NOT regress.
+  assert.strictEqual(shouldSettleBell({ stopMtime: undefined, askMtime: undefined }), false);
 });

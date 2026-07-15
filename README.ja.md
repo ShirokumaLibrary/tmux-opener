@@ -81,9 +81,59 @@ tmux が起動するログインシェルの `PATH` では見つかることが�
 これが働くには、セッション内のツールが注意を促すときにベルを鳴らす必要があります。多くの
 AI CLI は鳴らせますが、既定では鳴らないことがあります。
 
-- **Claude Code** — `~/.claude/settings.json` に `"preferredNotifChannel": "terminal_bell"`
-  を追加するか、セッション内で `/config preferredNotifChannel=terminal_bell` を実行する
-  （`claude config` という CLI サブコマンドは存在しない）
+### BEL の発生源を 1 つ選ぶ（足し算にはならない）
+
+Claude Code では 3 通りの構成があり、これらは**加算できる追加機能ではなく、排他的な
+選択肢**です。後述の参考フックスクリプトは、Claude Code 内蔵のベルに*上乗せ*するのでは
+なく、BEL の発生源を**置き換え**ます。鳴らすものは常に 1 つだけであるべきで、どれを選ぶかが
+`~/.claude/settings.json` の `preferredNotifChannel` を決めます。
+
+| 構成 | BEL を鳴らすのは | `preferredNotifChannel` |
+| --- | --- | --- |
+| **A. スクリプト無し**（既定） | Claude Code 本体 | `"terminal_bell"` — **必要**（他に鳴らすものが無い） |
+| **B. ベル理由サウンド**（「入力待ち」を別の音で） | `tmux-opener-bell.sh`（`Stop` / `Notification` フックから） | **非ベル**チャンネル（例: `"notifications_disabled"`） |
+| **C. サブエージェント対応 idle ゲート**（*本当に*アイドルのときだけ鳴らす） | `subagent-idle-gate.sh` → `tmux-opener-bell.sh` | **非ベル**チャンネル（例: `"notifications_disabled"`） |
+
+C は B の上に積む構成です（B の `Notification` → ask の配線をそのまま残し、*完了*のベル
+だけをゲート経由にする）。積めないのは **A と B / C の併用**です — スクリプトがベルを
+鳴らしているのに `terminal_bell` を有効なままにするのが、この表が防ごうとしている
+間違いです。
+
+**A — スクリプト無し。** Claude Code 自身がベルを鳴らしますが、そう頼んだときだけです。
+`~/.claude/settings.json` に `"preferredNotifChannel": "terminal_bell"` を追加するか、
+セッション内で `/config preferredNotifChannel=terminal_bell` を実行してください
+（`claude config` という CLI サブコマンドは存在しません）。これで設定は完了で、以降は
+すべて任意です。
+
+**B と C — `terminal_bell` は切り戻す。** フックスクリプトが BEL を鳴らすようになると、
+Claude Code の内蔵ベルは同じイベントに対する**第二の発生源**になり、両者が競合します。
+
+- 拡張機能は近接した 2 つの BEL を 1 つの通知に畳みます（セッション単位の 5 秒
+  クールダウン）。したがって二重に鳴ることはありません — しかしそれは、**先に着いた
+  ほうの BEL しか判定されない**ということでもあります。VS Code は一度出した通知を
+  後から書き換えられません。
+- フックは鳴らす**前に**理由ファイル（`stop` / `ask`）を書きます。Claude Code の内蔵
+  ベルは何も書きません。ただし、それだけでは多くの場合まだ壊れません。判定の時点で
+  **直近 30 秒以内**に書かれた理由ファイルがディスクにあれば、拡張機能は **250ms** 待って
+  読み直します（後述の待ち）。内蔵ベルに数ミリ秒遅れたフックのファイルもこの間に着くので、
+  正しい音が鳴ります。
+- **しかしこの待ちは、最初に見えるものが既にあったときにしか働きません。** どの理由
+  ファイルも新鮮でないとき — 30 秒間なにも書かれていない状態で、これは長いツール実行の
+  あとに承認プロンプトが出る場面そのものです — 内蔵ベルはその場で、理由の付いていない
+  ベルとして判定されます。完了プリセットと中立の通知文です。フック自身の BEL は
+  `ask` ファイルを書いた上で届きますが、クールダウンに落ちて捨てられ、判定を訂正する
+  ものは何もありません。B の存在理由である「入力待ち」の音は、まさに**席を外していた
+  ときの承認プロンプト**で失われます。
+- ゲート（C）では、内蔵ベルは音を間違えるおそれがあるどころではありません。ゲートを
+  完全に迂回して、サブエージェントがまだ動いている最中に通知します — ゲートが防ごうと
+  している当のものです。こちらは競合すら要りません。内蔵ベルはゲートを参照しないからです。
+
+`"notifications_disabled"`（または他の非ベルチャンネル）に設定し、BEL の発生源を
+スクリプト一本に絞ってください。切っても失うものはありません — フックは完了と入力待ちの
+両方の理由で鳴らします。
+
+他の CLI にはそれぞれの設定があります（ここのスクリプトは Claude Code 専用です）。
+
 - **Gemini CLI** — `enableTerminalBell` を有効化（設定 → アクセシビリティ。既定はオフ）
 - **Codex CLI** — Linux では完了時に既定でベルが鳴ることがあります（環境依存）
 - **aider** — `aider --notifications-command 'printf "\a"'` で通知をベルに寄せられます
@@ -108,10 +158,15 @@ claude/hooks/subagent-idle-gate.sh  ->  ~/.claude/hooks/subagent-idle-gate.sh
 claude/hooks/tmux-opener-bell.sh    ->  ~/.claude/hooks/tmux-opener-bell.sh
 ```
 
-いずれも `PATH` に `jq` が必要です。どれも必須ではありません — 何も入れなくても
-ベルは鳴り、通知も出ます（追加情報が付かないだけです）。**この配置、特にフック
-2 本を同じディレクトリに置くことは崩さないでください**: アイドルゲートはベル
-スクリプトを自分自身からの相対で解決します。
+いずれも `PATH` に `jq` が必要です。どれも任意ですが、**すべてが「加算」ではありません**。
+純粋な追加機能は **statusline ブリッジ**だけです — これはベルを鳴らさず、通知に
+コンテキスト率とコストを足すだけなので、上記のどの構成にも積めます。一方 2 本の
+**ベルフック**（`tmux-opener-bell.sh`・`subagent-idle-gate.sh`）は BEL の発生源を
+引き受けます。構成 B / C で Claude Code 側の `terminal_bell` を切る必要があるのは
+このためです。何も入れなければ構成 A です — ベルは鳴り通知も出ますが、それは
+`terminal_bell` が鳴らしているからです。**この配置、特にフック 2 本を同じ
+ディレクトリに置くことは崩さないでください**: アイドルゲートはベルスクリプトを
+自分自身からの相対で解決します。
 
 **clone する場合**（スクリプトの正本はリポジトリ側です）:
 
@@ -154,7 +209,8 @@ gh api repos/ShirokumaLibrary/tmux-opener/contents/scripts/install-claude.sh -H 
 bash install-claude.sh --src gh:ShirokumaLibrary/tmux-opener/claude
 ```
 
-必要な `~/.claude/settings.json` の設定は、以下の各機能の節に載せてあります。
+必要な `~/.claude/settings.json` の設定は、以下の各機能の節に載せてあります。ベルを
+鳴らす 2 つについては、その構成が要求する `preferredNotifChannel` も各節で再掲します。
 使いたいものだけ有効にしてください。
 
 ### statusline ブリッジ（通知にコンテキスト率とコストを出す）
@@ -247,24 +303,49 @@ git コマンドから `index.lock` を奪うことはありません。
 なければどのベルも通常の `tmuxOpener.notifySoundPreset` を鳴らし、挙動は変わりません。
 
 拡張機能はベルが鳴った*理由*を知れませんが、Claude Code のフックは知っています —
-`Stop` フックは完了時に、`Notification` フックは入力を求めるときに発火します。
-参考の `tmux-opener-bell.sh` を各フックから `stop` / `ask` 引数付きで呼ぶと、理由別
-ファイル（`${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/bell-<session>.<reason>.json`）
-を書いてからベルを鳴らします。2 つの理由は**別ファイル**に書くので、同じターンで
-両方のフックが発火しても（Claude Code の `Notification` は完了時にも発火しうる）
-互いを上書きしません。
+`Stop` フックは完了時に、`Notification` フックはあなたに何かを求めるイベントで発火
+します。参考の `tmux-opener-bell.sh` を各フックから `stop` / `ask` 引数付きで呼ぶと、
+理由別ファイル（`${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/bell-<session>.<reason>.json`）
+を書いてからベルを鳴らします。2 つの理由は**別ファイル**に書くので、`stop` と `ask` が
+近接して着地しても互いを上書きしません（読み手が後述の規則で決着させます — 通知種別で、
+無ければ mtime で。後述）。
 
 ベルが届くと、拡張機能は両方の理由ファイルを読んで音を選びます:
 
 - どちらも新鮮でない（**30 秒**以内でない）→ 通常の `notifySoundPreset`（フック無し
   の既定・遅延ゼロ）。
 - 片方だけ新鮮 → その理由の音。
-- 両方新鮮かつ互いに**3 秒**以内に書かれた → 1 つの完了ターンとみなし **`stop` 優先**
-  — `Notification` も同時に発火した完了は、ask の音ではなく完了の音を鳴らします。
-- 両方新鮮だが**3 秒**より離れている → 新しい方（本当に独立した ask）。
+- 両方新鮮かつ互いに**3 秒**以内に書かれた（同時発火）→ ask の理由ファイルが「あなた待ち」
+  の通知種別（`permission_prompt`・`agent_needs_input`・`elicitation_dialog`）を名乗るなら
+  ask の音、そうでなければ **`stop` 優先**。`matcher` 配線はこの 3 種だけを ask フックに
+  届けるので、そのいずれかを持つ ask は完了にこれほど近くても本物の承認待ちです。通知種別を
+  記録していない ask（この欄より前のレガシーフック）は従来どおり完了に畳まれます。
+- 両方新鮮だが**3 秒**より離れている → 新しい方（本当に独立した ask、あるいは — より*新しい*
+  stop があるなら — 先行のプロンプトを解決した完了）。通知種別が優先するのは上記の**3 秒**の
+  同時発火だけで、ここでより新しい stop を覆すことはありません。
 
 少なくとも片方の理由ファイルが新鮮なときは、同時発火する相方の着地を **250ms** 待って
 から選びます。新鮮な理由ファイルが無いベルはこの待機を完全にスキップします。
+
+**3 秒**の決着規則があるのは、`Notification` がターンの*完了*時にも発火するからです。
+1 つの完了ターンが両方のファイルを数ミリ秒差で書きうるので、この組は `stop` に寄せて
+決着させる必要がありました（完了を ask の音に乗っ取らせない）。この**本物の** ask を同時
+発火と見分けるため、ask フックはいまベルを鳴らした通知種別を — `Notification` の標準入力
+から読んで — 理由ファイルへ記録し、読み手はその種別を**3 秒の同時発火窓の中で**信じます。
+新鮮な ask が「あなた待ち」3 種のいずれか（後述の `matcher` はこの 3 種だけを通します）
+を名乗れば、その mtime が完了のすぐ隣にあっても ask として鳴らします。よって、ターン完了
+直後に届いた permission の確認は、いまや ask の音と "waiting for your input"（入力待ち）の
+トーストで鳴ります — かつては `stop` に寄り、ターンが完了したと言い張っていた挙動です。
+
+種別が優先するのはその**3 秒**の窓だけで、より新しい mtime の規則は覆しません。プロンプトが
+とうに解決された ask — それより **3 秒より後**に*新しい* `stop` がある — は `stop` に決着し
+ます。よって、同じターンの早い時点で本物のプロンプトが鳴ったというだけで、完了したターンが
+「入力待ち」と誤って鳴ることはありません。
+
+同時発火窓の中でも、**種別を判別できない** ask は従来どおり `stop` に畳まれます — 種別
+フィールド以前のレガシーフックや、matcher *無し* の `Notification` 配線が完了イベントから
+同時発火させた ask（その記録種別は 3 種ではなく完了型）です。よって matcher 無しのユーザー
+が頼る「完了を乗っ取らせない」保護は変わりません。
 
 有効にするには、スクリプトをインストールし（上記）、`~/.claude/settings.json` に
 フックを登録します:
@@ -275,17 +356,34 @@ git コマンドから `index.lock` を奪うことはありません。
     { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh stop" } ] }
   ],
   "Notification": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ] }
+    {
+      "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
+      "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ]
+    }
   ]
 }
 ```
+
+**これは構成 B なので、`preferredNotifChannel` は非ベルチャンネルにしてください**
+（上の表を参照）。ここから先は `tmux-opener-bell.sh` が BEL の発生源です。Claude Code
+内蔵の `terminal_bell` を有効なままにすると、理由の付かない第二のベルが共有クールダウンを
+先に取ってしまい、ask の音が鳴らなくなることがあります。
+
+**`matcher` は任意ではありません。** `Notification` は Claude Code の**すべての**通知
+タイプで発火します（完了系も idle リマインダーも含みます）。matcher 無しで登録すると、
+あなたを待っていないイベントでも「入力待ち」のベルが鳴ります。上で指定している 3 タイプが
+実際に待っているもの — permission プロンプト・エージェントの入力要求・elicitation
+ダイアログ — です。
+
+**完了系・idle 系のタイプを足さないでください**（`agent_completed`・
+`elicitation_complete`・`idle_prompt`）。完了のベルには所有者が 1 つだけあります —
+`Stop` フック（後述のゲートを入れるなら `subagent-idle-gate.sh main-stop`）です。
+そこに第二の発生源を足すことが、ゲートが防いでいる早すぎるベルを呼び戻します。
 
 「入力待ち」の音は `tmuxOpener.notifySoundPresetOnAsk` で選びます（既定は `siren`
 で、完了プリセットと区別しやすくしてあります）。`notifySoundPreset` と同じ 5 種の
 プリセットを使います。理由ファイルは上の statusline ブリッジと同じく `XDG_CACHE_HOME`
 からパスを解決するので、「両側が一致していること」という同じ注意点が当てはまります。
-Claude Code の `Notification` フックが煩わしいときは `matcher` で絞り込めます（Claude
-Code のフックのドキュメント参照）— これは任意の精緻化であり、必須ではありません。
 
 ### サブエージェント対応の idle（*本当に*アイドルのときだけ鳴らす）
 
@@ -372,7 +470,10 @@ Claude Code や `jq` 不在）では、掃除は age 判定へフォールバッ
     { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh reset" } ] }
   ],
   "Notification": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ] }
+    {
+      "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
+      "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ]
+    }
   ]
 }
 ```
@@ -380,19 +481,21 @@ Claude Code や `jq` 不在）では、掃除は age 判定へフォールバッ
 `PreToolUse` フックは `"matcher": "Agent"` で絞ってあるので、あらゆるツール使用では
 なく Agent ツール呼び出しのときだけサブエージェントを pending としてマーキングします —
 これが上述の非同期な「起動直後に停止」の競合を解消します。`Notification` フックは
-`tmux-opener-bell.sh ask` に向けたままにします — ゲートが司るのは完了（idle）だけで、
-「入力待ち」の理由には関与しません。
+構成 B と同じ matcher を付けたまま `tmux-opener-bell.sh ask` に向けておきます —
+ゲートが司るのは完了（idle）だけで「入力待ち」の理由には関与せず、その matcher が
+「ゲートの所管である完了系・idle 系のタイプでこのフックを発火させない」ことを担保します。
 
 **BEL の発生源はゲートに一本化する — 第二の発生源にゲートを迂回させない。**
-ゲートを有効にしたら、`Stop` フックは `tmux-opener-bell.sh stop` ではなく
-`subagent-idle-gate.sh main-stop` を呼ぶこと: 両者は排他で、上の基本のベル理由設定の
-ように `Stop` をベル直呼びにしたままゲートと**併用してはいけません**——メインターンの
-停止ごとに鳴ってしまい、ゲートの意味が失われます。ゲートは自分で
-`tmux-opener-bell.sh stop` を呼びますが、それは本当に idle だと判定したときだけです。
-さらに Claude Code 自身の `preferredNotifChannel` も確認してください: これが
-`"terminal_bell"` になっていると、Claude Code が内蔵ベルを直接鳴らしてゲートを完全に
-迂回し、意図しないタイミングで通知が出ます。`"notifications_disabled"`（または他の
-非ベルチャンネル）に設定し、完了 BEL の発生源をゲート一本に絞ってください。
+これが構成 C で、切るべき発生源は 1 つではなく 2 つあります。
+
+- `Stop` フックは `tmux-opener-bell.sh stop` ではなく `subagent-idle-gate.sh main-stop`
+  を呼ぶこと。両者は排他です: 構成 B のベル直呼びをゲートと**併用してはいけません**
+  ——メインターンの停止ごとに鳴ってしまい、ゲートの意味が失われます。ゲートは自分で
+  `tmux-opener-bell.sh stop` を呼びますが、それは本当に idle だと判定したときだけです。
+- Claude Code 自身の `preferredNotifChannel` を `"terminal_bell"` のままにしないこと。
+  そのままだと Claude Code が内蔵ベルを直接鳴らし、ゲートを完全に迂回して意図しない
+  タイミングで通知が出ます。`"notifications_disabled"`（または他の非ベルチャンネル）に
+  設定し、完了 BEL の発生源をゲート一本に絞ってください。
 
 ## 設定
 

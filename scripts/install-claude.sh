@@ -640,7 +640,10 @@ cat <<'SNIPPET'
       { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh stop" } ] }
     ],
     "Notification": [
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ] }
+      {
+        "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
+        "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ]
+      }
     ]
   }
 
@@ -648,3 +651,42 @@ SNIPPET
 say "With the gate wired as above, Stop must call subagent-idle-gate.sh main-stop"
 say "and NOT tmux-opener-bell.sh stop — the gate rings the bell itself, once the"
 say "session is truly idle. Requires jq on your PATH."
+say ""
+say "The Notification matcher is load-bearing, and so is what it leaves out (#108):"
+say "a Notification hook with NO matcher fires on all eight notification types, so"
+say "auth_success, an MCP elicitation_complete and an agent_completed each rang the"
+say "\"waiting for your input\" bell. The three above are the ones that actually wait"
+say "on a human. Do NOT add idle_prompt (or agent_completed) to it, tempting as it"
+say "looks: that is the session going idle, and the idle bell already has exactly"
+say "one owner — Stop -> subagent-idle-gate.sh main-stop, which holds it back while"
+say "a subagent is still running. A second, ungated bell for the same event is #75"
+say "all over again."
+say ""
+# The other BEL source, and the one the snippet above cannot see (#109). The bell
+# hooks *replace* Claude Code's built-in bell rather than adding to it: with
+# preferredNotifChannel left at "terminal_bell", Claude Code keeps ringing the
+# bell itself, bypassing the gate entirely and notifying while subagents are
+# still running — the very regression the gate exists to prevent. Kept as its own
+# paragraph, outside the snippet, because it is a settings key the user edits, not
+# a hook we can print into the JSON above.
+#
+# The condition is *which parts of the snippet were pasted*, not whether these
+# scripts are installed. The snippet is opt-in piecewise, and the statusline half
+# rings no bell at all — it only appends context%/cost to the notification. Telling
+# a statusline-only user to switch "terminal_bell" off would leave nothing ringing
+# (README: only the statusline bridge is a true *addition*; the bell hooks are a
+# *replacement*). So key the advice on the bell wiring.
+say "Also check preferredNotifChannel in $dest/settings.json — which way depends on"
+say "which parts of the snippet you pasted, not on this install:"
+say ""
+say "  * Pasted the bell hooks (Notification -> tmux-opener-bell.sh, Stop -> the"
+say "    gate)? They take over as the source of the BEL, so Claude Code's own bell"
+say "    must be switched off: set preferredNotifChannel to \"notifications_disabled\""
+say "    (or another non-bell channel). Leaving it at \"terminal_bell\" adds a second"
+say "    BEL that bypasses the gate and notifies at the wrong moment. Nothing is"
+say "    lost — the hooks ring for both a finished turn and a prompt waiting on you."
+say ""
+say "  * Pasted only the statusLine? Leave preferredNotifChannel alone. The"
+say "    statusline rings no bell; it only appends context%/cost to the"
+say "    notification, so it adds to whatever already rings. Switching"
+say "    \"terminal_bell\" off without the bell hooks leaves nothing ringing at all."

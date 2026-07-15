@@ -8,9 +8,14 @@ npm run compile      # esbuild bundle + copy xterm.js and codicon assets into me
 npm run watch        # esbuild in watch mode (does not re-copy the assets)
 npm run check-types  # tsc --noEmit
 npm run lint         # eslint src
+npm test             # node --test test/*.test.js
 ```
 
-There is no test suite.
+`npm test` is a browser-free unit suite over the pure logic split out of the
+webview (`media/webview-keymap.js`, `media/webview-sound.js`) and the extension
+host (`src/bell-notify.ts` et al); there is no integration/e2e suite. The
+release gate (`npm run vsix:all`) runs it too, so a PR that breaks a test fails
+the gate.
 
 ## Run
 
@@ -20,10 +25,12 @@ To install a build into the current window instead:
 
 ```sh
 npm run vsix     # builds out/tmux-opener-<version>.vsix
-code --install-extension out/tmux-opener-0.0.1.vsix --force
+code --install-extension "out/tmux-opener-$(node -p 'require("./package.json").version').vsix" --force
 ```
 
-Then run **Developer: Reload Window**.
+Then run **Developer: Reload Window**. The version is read from `package.json`
+rather than written out here, so the command doesn't go stale on the next
+release.
 
 `npm run vsix` passes `--dependencies`, which is required: `node-pty`'s compiled
 `.node` binary must ship inside the VSIX. `.vscodeignore` trims the package down

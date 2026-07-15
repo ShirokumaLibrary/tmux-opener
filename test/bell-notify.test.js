@@ -18,6 +18,21 @@ const {
   shouldOfferSoundUnlock,
 } = require('../src/bell-notify.ts');
 
+// The bell *reason* half of notifyBell (#47/#64) lives in status-bridge; the
+// #109 scenarios at the bottom of this file fold the two modules together the
+// way notifyBell does, so both sets of imports belong up here.
+const {
+  isFresh,
+  resolveBellReason,
+  shouldSettleBell,
+  selectPreset,
+  selectToastMessageKey,
+  BELL_SETTLE_MS,
+  STATUS_FRESHNESS_MS,
+  TOAST_DEFAULT,
+  TOAST_ASK,
+} = require('../src/status-bridge.ts');
+
 test('DEFAULT_COOLDOWN_MS is 5000ms', () => {
   assert.strictEqual(DEFAULT_COOLDOWN_MS, 5000);
 });
@@ -334,4 +349,270 @@ test('front (onBell) and background poller share one cooldown per session', () =
   const seeded = { active: [], lastNotifiedAt: front.nextState.lastNotifiedAt };
   const bg = detectBellEdges(seeded, ['foo'], 100 + DEFAULT_COOLDOWN_MS - 1);
   assert.deepStrictEqual(bg.toNotify, []);
+});
+
+// --- #109: a second BEL source beside the bell-reason hooks ------------------
+// These pin what happens when the reference bell hooks (`tmux-opener-bell.sh`,
+// the "bell-reason sound" setup) run while Claude Code's own
+// `preferredNotifChannel` is still `"terminal_bell"` — i.e. TWO sources emit a
+// BEL for the same event: the hook (which writes its reason file *before*
+// ringing) and Claude Code's built-in bell (which writes no reason file at all).
+//
+// They are characterization tests: they add no behavior, they establish — from
+// the code rather than from a guess — what that combination does, which is what
+// the README documents. The decisions live in two modules, so a scenario has to
+// fold them together exactly as `notifyBell` (extension.ts) does, and that is
+// THREE stages, not two:
+//   1. `shouldNotifySession` gates on the shared 5s per-session cooldown, so the
+//      first BEL inside the window is the only one ever judged (VS Code cannot
+//      amend a toast it has already shown);
+//   2. the reason files are read, and `shouldSettleBell` asks whether EITHER file
+//      *exists* (fresh or stale — the #113 gate; the hooks only overwrite, never
+//      delete, so an existing file means "this session is hook-wired");
+//   3. and only if a reason file exists — the stage the first cut of these tests
+//      dropped — does it wait BELL_SETTLE_MS (250ms), RE-READ both files, resolve
+//      the reason, and take `anyFresh` (the toast-wording gate) from that re-read.
+// Stage 3 is what decides whether the built-in bell winning the race actually
+// costs anything: a hook file that lost by milliseconds still lands inside the
+// settle and is picked up — and post-#113 that holds even for a session idle past
+// the 30s window, because the gate is existence, not freshness. `foldNotifyBell`
+// below models all three, so these tests cannot claim an outcome the real pipeline
+// does not produce.
+//
+// What these tests do NOT establish: which of the two BELs actually arrives
+// first. Nothing in this repository orders them, and it was not measured.
+
+/**
+ * Replay `notifyBell`'s three stages over a fake disk. `writes` gives the ms at
+ * which each reason file is written (absent = never); a file is visible to a
+ * read at `t` only once it has been written, which is what lets a scenario put
+ * the hook's write *after* the built-in bell it lost the race to.
+ * Returns what the two user-visible choices are made from: `anyFresh` (the toast
+ * wording key, taken post-settle, as in extension.ts) and `reason` (the sound
+ * preset, also post-settle).
+ *
+ * `preSettle` is the raw first read (the mtimes as of `bellAt`). It is NOT a
+ * fourth stage — extension.ts never resolves a reason from it — but it is what a
+ * test needs to show that a given outcome does *not* ride on the settle: resolve
+ * it, and if it already agrees with `reason`, the 250ms wait changed nothing.
+ */
+function foldNotifyBell({ state, session, bellAt, writes, askType }) {
+  const { notify, nextState } = shouldNotifySession(state, session, bellAt);
+  if (!notify) {
+    return { notified: false, nextState };
+  }
+  const readAt = (t) => ({
+    stopMtime: writes.stop !== undefined && writes.stop <= t ? writes.stop : undefined,
+    askMtime: writes.ask !== undefined && writes.ask <= t ? writes.ask : undefined,
+    // The ask reason file carries its notification_type (#116); it is visible only
+    // once that file has been written, exactly like the mtime above.
+    askType: writes.ask !== undefined && writes.ask <= t ? askType : undefined,
+  });
+  const initial = readAt(bellAt);
+  if (!shouldSettleBell(initial)) {
+    // No reason file has ever existed (hook-less, or the first bell): no settle,
+    // no re-read; `anyFresh` is false and `reason` stays at its 'stop' initializer.
+    return {
+      notified: true,
+      nextState,
+      anyFresh: false,
+      settled: false,
+      reason: 'stop',
+      preSettle: initial,
+    };
+  }
+  const after = bellAt + BELL_SETTLE_MS;
+  const settled = readAt(after);
+  // `anyFresh` — the toast-wording gate — is taken *post-settle* (as in
+  // extension.ts), so a reason that lands during the 250ms settle corrects the
+  // wording as well as the preset; a hook-wired but genuinely idle bell whose
+  // files stay stale through the settle keeps `anyFresh` false and the neutral
+  // default toast.
+  const anyFresh =
+    (settled.stopMtime !== undefined && isFresh(settled.stopMtime, after)) ||
+    (settled.askMtime !== undefined && isFresh(settled.askMtime, after));
+  return {
+    notified: true,
+    nextState,
+    anyFresh,
+    settled: true,
+    reason: resolveBellReason({ ...settled, now: after }),
+    preSettle: initial,
+  };
+}
+
+test('#113: the shared cooldown still drops the hook follow-up BEL — now harmlessly', () => {
+  // The mechanism that made #113 a *permanent* mis-verdict, pinned so it stays
+  // understood: the hook's own BEL (ask file now on disk) arrives 40ms after the
+  // built-in bell and is dropped by the shared 5s cooldown before its reason is
+  // ever read — VS Code cannot amend a toast it has already shown. Under the old
+  // freshness gate this was fatal (the first, reason-less bell had resolved
+  // `stop`). Post-#113 it is harmless: the first bell already settled and resolved
+  // `ask` (see the cold-rescue test above), so there is nothing left to correct.
+  const idleAt = 100_000;
+  const bellAt = idleAt + STATUS_FRESHNESS_MS + 1_000; // stop file is >30s stale
+  const first = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: { stop: idleAt, ask: bellAt + 40 },
+  });
+  assert.strictEqual(first.reason, 'ask'); // already correct — no correction needed
+
+  const hookBell = foldNotifyBell({
+    state: first.nextState,
+    session: 'foo',
+    bellAt: bellAt + 40,
+    writes: { stop: idleAt, ask: bellAt + 40 },
+  });
+  assert.strictEqual(hookBell.notified, false); // dropped by the cooldown, as before
+});
+
+test('#113 (cold rescue): a hook-wired session idle past 30s now settles and picks up the late ask', () => {
+  // The #113 fix, and the exact scenario the old `#109 (cold)` test pinned as
+  // unsalvageable. The session has been idle past the 30s freshness window (a long
+  // tool call, then a permission prompt), so its `bell-<s>.stop.json` is stale —
+  // but it EXISTS, which is the signal `shouldSettleBell` now gates on. The
+  // built-in bell wins the race by 40ms; because a reason file exists, the
+  // extension settles 250ms, re-reads, finds the hook's ask file (40ms < 250ms),
+  // and resolves `ask`. Under the old freshness gate this was `stop` + neutral
+  // toast, dropped forever behind the committed cooldown.
+  const idleAt = 100_000;
+  const bellAt = idleAt + STATUS_FRESHNESS_MS + 1_000; // stop file is >30s stale
+  const rescued = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: { stop: idleAt, ask: bellAt + 40 }, // the hook's ask lands 40ms late
+  });
+
+  assert.strictEqual(rescued.notified, true);
+  assert.strictEqual(rescued.settled, true); // gated on existence, not freshness
+  assert.strictEqual(rescued.reason, 'ask'); // the late ask was picked up by the re-read
+  assert.strictEqual(rescued.anyFresh, true); // post-settle: the ask file is now fresh
+  assert.strictEqual(selectPreset(rescued.reason, 'classic', 'siren'), 'siren'); // the ask preset
+  assert.strictEqual(selectToastMessageKey(rescued.anyFresh, rescued.reason), TOAST_ASK);
+
+  // And it does NOT ride on the pre-settle snapshot — the whole point is the
+  // 250ms wait: at `bellAt` only the stale stop file is visible, so a resolve then
+  // would have said `stop`. This is what distinguishes the fix from a tautology.
+  assert.strictEqual(resolveBellReason({ ...rescued.preSettle, now: bellAt }), 'stop');
+});
+
+test('#113 (truly hook-less): a session that never had a reason file stays zero-latency', () => {
+  // The invariant #113 must NOT regress. A user without the bell-reason hooks has
+  // no reason file at all, so `shouldSettleBell` is false: no settle, no added
+  // latency, plain preset, neutral toast — exactly the pre-#47 behavior. The
+  // first bell of any session (before any hook has written) is the same shape.
+  const bellAt = 100_000;
+  const hookless = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: {}, // neither file ever written
+  });
+
+  assert.strictEqual(hookless.notified, true);
+  assert.strictEqual(hookless.settled, false); // no reason file -> no settle
+  assert.strictEqual(hookless.anyFresh, false);
+  assert.strictEqual(hookless.reason, 'stop');
+  assert.strictEqual(selectPreset(hookless.reason, 'classic', 'siren'), 'classic');
+  assert.strictEqual(selectToastMessageKey(hookless.anyFresh, hookless.reason), TOAST_DEFAULT);
+});
+
+test('#116: a genuine approval prompt co-firing within 3s of completion resolves ask, not stop', () => {
+  // The bug this Issue fixes. A turn finishes, then a real permission prompt lands
+  // 2.5s later — inside BELL_COFIRE_MS. The mtime-only tie-break (rule ③) read the
+  // proximity as a co-firing completion and returned `stop`: completion sound +
+  // "has finished" toast, while Claude was actually waiting for input. The ask
+  // reason file now carries notification_type=permission_prompt, so the reason
+  // resolves `ask` regardless of the mtime proximity.
+  const bellAt = 100_000;
+  const cofire = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: {
+      stop: bellAt - 2_500, // completion 2.5s ago (inside the 3s co-fire window)
+      ask: bellAt, // the genuine approval prompt now
+    },
+    askType: 'permission_prompt',
+  });
+
+  assert.strictEqual(cofire.reason, 'ask');
+  assert.strictEqual(cofire.anyFresh, true);
+  assert.strictEqual(selectPreset(cofire.reason, 'classic', 'siren'), 'siren');
+  assert.strictEqual(selectToastMessageKey(cofire.anyFresh, cofire.reason), TOAST_ASK);
+
+  // Without the type, the identical mtimes fall to the tie-break and misfire as
+  // `stop` — which is exactly the bug, and what proves the type is doing the work.
+  const untyped = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: { stop: bellAt - 2_500, ask: bellAt },
+  });
+  assert.strictEqual(untyped.reason, 'stop');
+});
+
+test('#109 (warm): the 250ms settle rescues the same race when a reason file is fresh', () => {
+  // The counterpart, and the reason the cold case above has to be stated as the
+  // *cold* case. Here the previous turn finished 29s ago, so `bell-<s>.stop.json`
+  // is still fresh when the built-in bell wins the race by 40ms. That makes
+  // `anyFresh` true — so the extension settles 250ms, re-reads, finds the hook's
+  // ask file (40ms < 250ms), and plays the ask sound after all. The two-source
+  // setup does not lose the ask here; only the cold path does.
+  const bellAt = 100_000;
+  const warm = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: {
+      stop: bellAt - (STATUS_FRESHNESS_MS - 1_000), // last turn finished 29s ago
+      ask: bellAt + 40, // the hook, milliseconds behind the built-in bell
+    },
+  });
+
+  assert.strictEqual(warm.anyFresh, true);
+  assert.strictEqual(warm.settled, true);
+  assert.strictEqual(warm.reason, 'ask'); // the late file was picked up by the re-read
+  assert.strictEqual(selectPreset(warm.reason, 'classic', 'siren'), 'siren');
+  assert.strictEqual(selectToastMessageKey(warm.anyFresh, warm.reason), TOAST_ASK);
+});
+
+test('#109 (prescribed): with the hooks as the only BEL source, no verdict rides on the race', () => {
+  // The configuration the README prescribes (a non-bell `preferredNotifChannel`).
+  // The only BEL is the hook's, and the hook writes its reason file *before* it
+  // rings — so the ask file is already on disk when the bell is judged. Nothing
+  // rides on the settle landing in time, and nothing rides on which source wins.
+  const bellAt = 100_000;
+  const prescribed = foldNotifyBell({
+    state: initialBellState(),
+    session: 'foo',
+    bellAt,
+    writes: {
+      stop: bellAt - (STATUS_FRESHNESS_MS - 1_000), // an old completion, still "fresh"
+      ask: bellAt - 1, // written before the hook rang
+    },
+  });
+
+  assert.strictEqual(prescribed.reason, 'ask'); // beyond the 3s co-fire window -> newer wins
+  assert.strictEqual(selectPreset(prescribed.reason, 'classic', 'siren'), 'siren');
+  assert.strictEqual(
+    selectToastMessageKey(prescribed.anyFresh, prescribed.reason),
+    TOAST_ASK,
+  );
+
+  // And that is the claim in this test's name, so assert it rather than imply it.
+  // The settle DOES still run here (a fresh stop file makes `anyFresh` true), so
+  // "no race" cannot mean "no settle" — it means the settle is not load-bearing:
+  // the pre-settle snapshot, what the extension would have resolved had it never
+  // waited, already says `ask`. Without this line the test only walks the same
+  // post-settle path as the warm case above and proves nothing the warm case
+  // didn't.
+  assert.strictEqual(prescribed.settled, true);
+  assert.strictEqual(
+    resolveBellReason({ ...prescribed.preSettle, now: bellAt }),
+    'ask',
+  );
 });

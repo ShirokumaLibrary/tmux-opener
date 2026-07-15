@@ -43,6 +43,37 @@ export const BELL_SETTLE_MS = 250;
 export type BellReason = 'stop' | 'ask';
 
 /**
+ * The Notification `notification_type` values that mean **a human is being
+ * waited on** (Issue #116). This is the single source of truth for that set, and
+ * it MUST stay identical to the Notification matcher the installer wires
+ * (`permission_prompt|agent_needs_input|elicitation_dialog` in
+ * `scripts/install-claude.sh`, #108). Keep the two in sync: a type here that the
+ * matcher omits would never reach the ask hook, and one the matcher lists but
+ * this omits would silently fall back to the mtime tie-break. The drift guard
+ * that ties this array to the actual printed matcher lives in
+ * `test/install-claude-snippet.test.js`.
+ *
+ * Under a matcher-wired Notification hook, an ask reason file carrying one of
+ * these is *always* a genuine approval wait — never a completion co-fire — so
+ * `resolveBellReason` trusts it over the co-fire mtime tie-break.
+ */
+export const ASK_NOTIFICATION_TYPES = [
+  'permission_prompt',
+  'agent_needs_input',
+  'elicitation_dialog',
+] as const;
+
+/**
+ * True when `type` is one of the human-waiting notification types
+ * (`ASK_NOTIFICATION_TYPES`). A missing type (legacy hooks that don't write it),
+ * an empty string, or a completion-type value (a matcher-less legacy wiring can
+ * still emit one) all return false, so the caller falls back to the mtime logic.
+ */
+export function isApprovalNotificationType(type: string | undefined): boolean {
+  return type !== undefined && (ASK_NOTIFICATION_TYPES as readonly string[]).includes(type);
+}
+
+/**
  * The l10n source keys for the appended detail. These are *both* the English
  * text and the lookup keys (source-keyed l10n — see CLAUDE.md), so the ja bundle
  * `l10n/bundle.l10n.ja.json` carries the exact same strings. Split in two so the
@@ -151,22 +182,37 @@ export function bellReasonFilePath(
 
 /**
  * Decide which reason a bell represents from the two reason files' mtimes
- * (`undefined` = file absent). Pure; the FS stats live in extension.ts. Rules
- * (design #45 / Issue #47):
+ * (`undefined` = file absent) and the ask file's `notification_type` (#116).
+ * Pure; the FS reads live in extension.ts. Rules (design #45 / Issue #47/#116):
  *   ① neither fresh              -> 'stop' (safe fallback)
  *   ② exactly one fresh          -> that reason
- *   ③ both fresh, |Δmtime| ≤ cofire -> 'stop' (a co-firing completion; stop wins)
+ *   ③ both fresh, |Δmtime| ≤ cofire -> the co-fire tie-break (#116): a genuine
+ *       approval prompt (an ask whose `notification_type` is a human-waiting type)
+ *       resolves 'ask'; otherwise (legacy/no type) a co-firing completion still
+ *       resolves 'stop'. Trusting the type is scoped to *this* window only — a
+ *       matcher-wired prompt that co-fires within `cofireMs` of a completion is
+ *       still a real wait, but a stop that arrived far later has resolved it.
  *   ④ both fresh, |Δmtime| > cofire -> the reason with the newer mtime
+ *
+ * The type only ever tips rule ③; it never overrides the newer-mtime rule ④. So a
+ * fresh but old ask (its prompt long since answered by a much newer stop) resolves
+ * 'stop', not 'ask' — the completion is not mis-played as a wait (#116 F-1). With
+ * no (recognizable) `askType` — legacy hooks that don't write it, or a
+ * completion-type Notification from a matcher-less wiring — rule ③ folds the
+ * co-fire to 'stop' exactly as before, so a matcher-less user's #75/#47 co-fire
+ * protection is unchanged.
  */
 export function resolveBellReason({
   stopMtime,
   askMtime,
+  askType,
   now,
   freshnessMs = STATUS_FRESHNESS_MS,
   cofireMs = BELL_COFIRE_MS,
 }: {
   stopMtime: number | undefined;
   askMtime: number | undefined;
+  askType?: string;
   now: number;
   freshnessMs?: number;
   cofireMs?: number;
@@ -184,9 +230,44 @@ export function resolveBellReason({
   }
   // Both fresh: stop and ask are guaranteed numbers here.
   if (Math.abs((stopMtime as number) - (askMtime as number)) <= cofireMs) {
-    return 'stop';
+    // Co-fire tie-break (#116): a genuine approval prompt (a recognizable
+    // notification_type) is trusted over the default 'stop' — but only inside
+    // this proximity window. A stop that arrived farther apart (rule ④ below)
+    // means the human already resolved the prompt, so the type does not reach
+    // here. With no recognizable type, a co-firing completion still wins.
+    return isApprovalNotificationType(askType) ? 'ask' : 'stop';
   }
   return (stopMtime as number) >= (askMtime as number) ? 'stop' : 'ask';
+}
+
+/**
+ * Decide whether `notifyBell` should settle — wait `BELL_SETTLE_MS`, re-read the
+ * reason files, and resolve the reason — from the *initial* reason-file read.
+ *
+ * The gate is *existence*, not freshness (Issue #113). The hooks only ever
+ * overwrite the reason files (`bell-<s>.stop.json` / `.ask.json`) and never
+ * delete them, so a file that exists at all — even one long past
+ * `STATUS_FRESHNESS_MS` — is a stable signal that this session is bell-hook-wired.
+ * Settling for it lets a fresh reason the hook writes around the BEL land before
+ * the reason is chosen. That is the cold case the old freshness gate missed: a
+ * session idle past 30s whose approval-prompt reason arrives a few ms after a
+ * reason-less BEL wins the notification slot, and the cooldown — already committed
+ * — drops the correcting bell (VS Code cannot amend a toast it has shown).
+ *
+ * A session whose reason files have *never* existed (a user without the hooks, or
+ * the very first bell before any hook has written) has both mtimes `undefined`,
+ * returns false, and keeps the zero-latency path: no settle, plain preset, neutral
+ * toast. The accepted cost is that a hook-wired session pays `BELL_SETTLE_MS` even
+ * on a genuinely reason-less bell; it stays well under `DEFAULT_COOLDOWN_MS`.
+ */
+export function shouldSettleBell({
+  stopMtime,
+  askMtime,
+}: {
+  stopMtime: number | undefined;
+  askMtime: number | undefined;
+}): boolean {
+  return stopMtime !== undefined || askMtime !== undefined;
 }
 
 /**

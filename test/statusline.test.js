@@ -403,21 +403,21 @@ describe('claude/statusline.sh bars', { skip: hasJq ? false : 'jq not installed'
 
 describe('claude/statusline.sh elapsed time', { skip: hasJq ? false : 'jq not installed' }, () => {
   // @testdoc Elapsed time switches unit with magnitude — a long session used to
-  // read `⏱️ 7384s`, which nobody converts in their head (#92 B-4).
+  // read `⏰ 7384s`, which nobody converts in their head (#92 B-4).
   //
   // The hour+minute form carries a space (`2h 3m`), so the two units read as two
   // and not as one run-on token. The single-unit forms have nothing to separate and
   // are unchanged, and a whole hour stays `1h` rather than becoming `1h 0m`.
   const cases = [
-    ['zero', 0, /⏱️ 0s/],
-    ['seconds below a minute', 45_000, /⏱️ 45s/],
-    ['the last second below a minute', 59_000, /⏱️ 59s/],
-    ['exactly one minute', 60_000, /⏱️ 1m/],
-    ['minutes below an hour', 720_000, /⏱️ 12m/],
-    ['the last minute below an hour', 3_599_000, /⏱️ 59m/],
-    ['hours with minutes are spaced', 7_384_000, /⏱️ 2h 3m/],
-    ['one hour and one minute', 3_660_000, /⏱️ 1h 1m/],
-    ['a whole hour drops the minutes', 3_600_000, /⏱️ 1h(?![\s\d])/],
+    ['zero', 0, /⏰ 0s/],
+    ['seconds below a minute', 45_000, /⏰ 45s/],
+    ['the last second below a minute', 59_000, /⏰ 59s/],
+    ['exactly one minute', 60_000, /⏰ 1m/],
+    ['minutes below an hour', 720_000, /⏰ 12m/],
+    ['the last minute below an hour', 3_599_000, /⏰ 59m/],
+    ['hours with minutes are spaced', 7_384_000, /⏰ 2h 3m/],
+    ['one hour and one minute', 3_660_000, /⏰ 1h 1m/],
+    ['a whole hour drops the minutes', 3_600_000, /⏰ 1h(?![\s\d])/],
   ];
   for (const [name, ms, expected] of cases) {
     test(name, () => {
@@ -444,7 +444,7 @@ describe('claude/statusline.sh removed segments', { skip: hasJq ? false : 'jq no
     assert.doesNotMatch(out, /200k/);
     assert.doesNotMatch(out, /🔀/);
     assert.doesNotMatch(out, /#92/);
-    assert.match(out, /⌨️ INSERT/); // the line those two shared still renders
+    assert.match(out, /📝 INSERT/); // the line those two shared still renders
   });
 });
 
@@ -831,5 +831,44 @@ describe('claude/statusline.sh untracked files', { skip: hasJq && hasGit ? false
     assert.doesNotMatch(out, /↑9|↓9/);
     assert.doesNotMatch(out, /[↑↓]/); // no upstream divergence exists, so no arrow at all
     assert.ok(!fs.existsSync(path.join(repo.work, 'pwned')));
+  });
+});
+
+// The emoji-width invariant (Issue #125). A segment marker whose *displayed* width
+// depends on the terminal shifts every segment after it, so the statusline the
+// script drew and the one on screen disagree — the same confident-wrong-answer the
+// script refuses everywhere else, made worse because it corrupts a *neighbour's*
+// alignment. Two Unicode features make a marker's width unknowable across
+// terminals: a text-default emoji promoted with VS16 (U+FE0F) — the terminal may
+// advance 1 cell while painting a 2-cell glyph, the visible LEVEL SLIDER (U+1F39A
+// U+FE0F) overlap — and a ZWJ
+// sequence (U+200D), which falls back to its components (up to 2x the width) where
+// the terminal lacks that exact sequence. Both are ruled out at the source: the SAFE
+// set is single-codepoint Emoji_Presentation=Yes emoji, which need neither. This is
+// a *static* check on the script text (no jq/git/tty needed), and it is intentionally
+// blunt — the whole file, comments included, must be free of both bytes, so the
+// invariant comment names them as `U+FE0F`/`U+200D` rather than pasting the glyphs.
+// It cannot observe the on-screen render (the Bash/test tty limit in CLAUDE.md's
+// "Verifying the bell"); it enforces the property that makes the render predictable.
+describe('claude/statusline.sh emoji width', () => {
+  const source = fs.readFileSync(STATUSLINE, 'utf8');
+
+  // @testdoc No VS16 (U+FE0F) anywhere in the script: a `<base>+VS16` marker has no
+  // fixed cell width (terminals disagree on whether VS16 advances 1 or 2 cells), and
+  // that is the exact LEVEL SLIDER (U+1F39A U+FE0F) misalignment #125 fixed. Every
+  // marker uses a codepoint that is already Emoji_Presentation=Yes, so none needs VS16.
+  test('carries no variation selector 16 (U+FE0F)', () => {
+    assert.strictEqual(source.indexOf('️'), -1,
+      'U+FE0F found: a VS16-promoted emoji has terminal-dependent width (see the emoji-width invariant)');
+  });
+
+  // @testdoc No ZWJ (U+200D) anywhere: a joined sequence like ADULT+ZWJ+COMPUTER
+  // (U+1F9D1 U+200D U+1F4BB) renders as one 2-cell glyph only where the terminal ships
+  // that exact sequence and otherwise splits into its components, so its width is not
+  // knowable. Single-codepoint
+  // markers have no such fallback.
+  test('carries no zero-width joiner (U+200D)', () => {
+    assert.strictEqual(source.indexOf('‍'), -1,
+      'U+200D found: a ZWJ sequence has terminal-dependent width (see the emoji-width invariant)');
   });
 });

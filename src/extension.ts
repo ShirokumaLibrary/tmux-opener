@@ -8,6 +8,7 @@ import {
   statusFilePath,
   bellReasonFilePath,
   resolveBellReason,
+  shouldSettleBell,
   selectPreset,
   selectToastMessageKey,
   isFresh,
@@ -619,12 +620,17 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     // The bell reason drives both the sound preset (#47) and the toast wording
     // (#64), so resolve it once and share it. Read the reason files only when at
     // least one consumer is on. The opt-in bell-reason hook writes
-    // `.stop.json` / `.ask.json` *before* emitting the BEL, so an initial read
-    // tells us whether this bell carries a reason. No fresh reason file -> a
-    // user without the hooks: keep the zero-latency path (no settle) and fall
-    // back to the plain preset / neutral toast (behavior unchanged). At least
-    // one fresh -> the co-firing sibling (Stop vs Notification) may still be in
-    // flight, so settle briefly, re-read, then resolve the reason.
+    // `.stop.json` / `.ask.json` *before* emitting the BEL, and only ever
+    // overwrites them — never deletes — so the mere *existence* of a reason file
+    // (fresh or long stale) tells us this session is hook-wired. No reason file
+    // has ever existed -> a user without the hooks (or the first bell): keep the
+    // zero-latency path (no settle) and fall back to the plain preset / neutral
+    // toast (behavior unchanged). A reason file exists -> the current turn's
+    // fresh reason (and any co-firing Stop/Notification sibling) may still be in
+    // flight, so settle briefly, re-read, then resolve the reason. Gating on
+    // existence rather than freshness is the #113 fix: a session idle past the
+    // 30s window still settles, so an ask reason landing just after a reason-less
+    // BEL is picked up instead of being lost behind the already-committed cooldown.
     const notifyToast = vscode.workspace
       .getConfiguration('tmuxOpener')
       .get<boolean>('notifyToast', true);
@@ -645,19 +651,26 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     // The surfaces gate above already returned when both channels are off, so
     // by here at least one will surface — resolve the reason unconditionally.
     let reason: BellReason = 'stop';
+    let anyFresh = false;
     const initial = this.readBellReasons(sessionName);
-    const now = Date.now();
-    const anyFresh =
-      (initial.stopMtime !== undefined && isFresh(initial.stopMtime, now)) ||
-      (initial.askMtime !== undefined && isFresh(initial.askMtime, now));
-    if (anyFresh) {
+    if (shouldSettleBell(initial)) {
       await new Promise((resolve) => setTimeout(resolve, BELL_SETTLE_MS));
       const settled = this.readBellReasons(sessionName);
+      const settledNow = Date.now();
       reason = resolveBellReason({
         stopMtime: settled.stopMtime,
         askMtime: settled.askMtime,
-        now: Date.now(),
+        askType: settled.askType,
+        now: settledNow,
       });
+      // `anyFresh` (the toast-wording gate) is taken *post-settle* so the wording
+      // is corrected alongside the preset: a reason that lands during the settle
+      // makes the toast say "waiting for your input", not just play the ask sound.
+      // When nothing fresh survives the settle (a hook-wired but genuinely idle
+      // bell), this stays false and the neutral default wording holds.
+      anyFresh =
+        (settled.stopMtime !== undefined && isFresh(settled.stopMtime, settledNow)) ||
+        (settled.askMtime !== undefined && isFresh(settled.askMtime, settledNow));
     }
 
     // Play a sound alongside the toast (opt-out via `notifySound`). The webview
@@ -779,16 +792,24 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   /**
    * Stat the two bell-reason bridge files for `sessionName` and return their
-   * mtimes (Issue #47), `undefined` where a file is absent. All I/O lives here;
-   * the reason decision is the pure `resolveBellReason`. Each stat is guarded
-   * independently so a missing `.ask.json` doesn't hide a present `.stop.json`.
-   * Writer (the hook script) and reader run on the same machine/FS/clock — the
-   * extension host spawned the tmux the hooks run under — so the mtimes are
-   * comparable even under Remote-SSH (mirrors `readBridgeDetail`).
+   * mtimes (Issue #47), plus the ask file's `notification_type` (Issue #116),
+   * `undefined` where a file is absent or the field is missing. All I/O lives
+   * here; the reason decision is the pure `resolveBellReason`. Each read is
+   * guarded independently so a missing `.ask.json` doesn't hide a present
+   * `.stop.json`. Writer (the hook script) and reader run on the same
+   * machine/FS/clock — the extension host spawned the tmux the hooks run under —
+   * so the mtimes are comparable even under Remote-SSH (mirrors `readBridgeDetail`).
+   *
+   * The ask file is read (not just stat'd) so its `notification_type` can be
+   * threaded into `resolveBellReason`: a matcher-wired approval prompt is a real
+   * "waiting for input" even when it co-fires within `BELL_COFIRE_MS` of a
+   * completion (#116). A legacy hook that writes no type, or a malformed/partial
+   * read, leaves `askType` undefined and the mtime tie-break decides as before.
    */
   private readBellReasons(sessionName: string): {
     stopMtime: number | undefined;
     askMtime: number | undefined;
+    askType: string | undefined;
   } {
     const statMtime = (reason: 'stop' | 'ask'): number | undefined => {
       try {
@@ -798,7 +819,24 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
         return undefined;
       }
     };
-    return { stopMtime: statMtime('stop'), askMtime: statMtime('ask') };
+    const readAskType = (): string | undefined => {
+      try {
+        const path = bellReasonFilePath(sessionName, 'ask', process.env, homedir());
+        const data: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+        const type =
+          typeof data === 'object' && data !== null
+            ? (data as Record<string, unknown>).notification_type
+            : undefined;
+        return typeof type === 'string' && type.length > 0 ? type : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      stopMtime: statMtime('stop'),
+      askMtime: statMtime('ask'),
+      askType: readAskType(),
+    };
   }
 
   /**

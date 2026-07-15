@@ -84,11 +84,66 @@ button: click it to hear the bell you missed — and every bell after it rings o
 its own.
 
 For it to fire, the tool in the session has to ring the bell when it wants
-attention. Most AI CLIs can, though not always by default:
+attention. Most AI CLIs can, though not always by default.
 
-- **Claude Code** — add `"preferredNotifChannel": "terminal_bell"` to
-  `~/.claude/settings.json`, or run `/config preferredNotifChannel=terminal_bell`
-  inside a session (there is no `claude config` CLI subcommand)
+### Choosing the BEL source (pick one — they don't add up)
+
+For Claude Code there are three ways to arrange it, and they are **alternatives,
+not additions**. The reference hook scripts described further down do not put a
+bell *on top of* Claude Code's own — they **replace** it as the source of the
+BEL. Exactly one thing should be ringing it, and which one you pick decides what
+`preferredNotifChannel` must be in `~/.claude/settings.json`:
+
+| Setup | What rings the BEL | `preferredNotifChannel` |
+| --- | --- | --- |
+| **A. No scripts** (the default) | Claude Code itself | `"terminal_bell"` — **required**; nothing else would ring |
+| **B. Bell-reason sound** (a distinct sound for "waiting for input") | `tmux-opener-bell.sh`, from the `Stop` and `Notification` hooks | a **non-bell** channel, e.g. `"notifications_disabled"` |
+| **C. Subagent-aware idle gate** (ring only on *true* idle) | `subagent-idle-gate.sh` → `tmux-opener-bell.sh` | a **non-bell** channel, e.g. `"notifications_disabled"` |
+
+C builds on B — it keeps B's `Notification` → ask wiring and routes only the
+*completion* bell through the gate — so those two stack with each other. What
+doesn't stack is **A with either of them**: leaving `terminal_bell` on while a
+hook script also rings the bell is the mistake this table exists to prevent.
+
+**A — no scripts.** Claude Code rings the bell itself, but only if you ask it to:
+add `"preferredNotifChannel": "terminal_bell"` to `~/.claude/settings.json`, or
+run `/config preferredNotifChannel=terminal_bell` inside a session (there is no
+`claude config` CLI subcommand). This is the whole setup; everything below is
+optional.
+
+**B and C — switch `terminal_bell` back off.** Once a hook script rings the BEL,
+Claude Code's built-in bell is a *second* source firing for the same event, and
+the two race:
+
+- The extension folds a pair of BELs into one notification (a per-session
+  cooldown of 5s), so you don't get two toasts or two sounds. But that also means
+  **only the first BEL of the pair is ever judged** — and VS Code cannot amend a
+  notification it has already shown.
+- The hook writes its reason file (`stop` / `ask`) *before* it rings; Claude
+  Code's built-in bell writes nothing. Often that costs you nothing. If a reason
+  file written in the last 30s is already on disk when the bell is judged, the
+  extension waits **250ms** and re-reads it (the settle described further down) —
+  so the hook's file, a few milliseconds behind the built-in bell, still lands in
+  time and the right sound plays.
+- **But the settle only runs when there was already something to notice.** If no
+  reason file is fresh — nothing written for 30s, which is exactly what a long
+  tool call before a permission prompt looks like — the built-in bell is judged
+  on the spot, with no reason attached: the completion preset and the neutral
+  toast. The hook's own BEL, its `ask` file now on disk, arrives inside the
+  cooldown and is dropped, so nothing corrects the verdict. The "waiting for
+  input" sound that setup B exists for goes missing on exactly the prompts you
+  had stepped away from.
+- With the gate (C), the built-in bell doesn't just risk the wrong sound: it
+  bypasses the gate completely and notifies while subagents are still working —
+  precisely what the gate is there to prevent. No race is needed for that one;
+  the built-in bell simply never consults the gate.
+
+Set it to `"notifications_disabled"` (or another non-bell channel) so the scripts
+are the single source of the BEL. Nothing is lost by turning it off: the hooks
+ring for both reasons — a finished turn and a prompt waiting on you.
+
+Other CLIs have their own switch (the scripts here are Claude Code-specific):
+
 - **Gemini CLI** — enable `enableTerminalBell` (Settings → Accessibility; off by
   default)
 - **Codex CLI** — on Linux it may already ring the bell on completion
@@ -116,10 +171,16 @@ claude/hooks/subagent-idle-gate.sh  ->  ~/.claude/hooks/subagent-idle-gate.sh
 claude/hooks/tmux-opener-bell.sh    ->  ~/.claude/hooks/tmux-opener-bell.sh
 ```
 
-They all need `jq` on your `PATH`, and none of them is required: with nothing
-installed, the bell still rings and the notification still appears — you just
-don't get the extras. Keep the layout as shown, in particular the two hooks in
-the same directory: the idle gate resolves the bell script relative to itself.
+They all need `jq` on your `PATH`, and all of them are optional — but they are
+not all *additive*. Only the **statusline bridge** is a true extra: it rings no
+bell, it just adds context% and cost to the notification, so it stacks with any
+of the three setups above. The two **bell hooks** (`tmux-opener-bell.sh`,
+`subagent-idle-gate.sh`) take over as the source of the BEL, which is why setups
+B and C require Claude Code's own `terminal_bell` to be switched off. Install
+nothing and you are in setup A: the bell still rings and the notification still
+appears — because `terminal_bell` is what rings it. Keep the layout as shown, in
+particular the two hooks in the same directory: the idle gate resolves the bell
+script relative to itself.
 
 **From a clone** (the repository is the source of truth for these scripts):
 
@@ -164,8 +225,9 @@ gh api repos/ShirokumaLibrary/tmux-opener/contents/scripts/install-claude.sh -H 
 bash install-claude.sh --src gh:ShirokumaLibrary/tmux-opener/claude
 ```
 
-Each feature below shows the `~/.claude/settings.json` wiring it needs. Enable
-only the ones you want.
+Each feature below shows the `~/.claude/settings.json` wiring it needs — and, for
+the two that ring the bell, restates which `preferredNotifChannel` that implies.
+Enable only the ones you want.
 
 ### Statusline bridge (context % and cost in the notification)
 
@@ -263,28 +325,57 @@ statusline bridge, this is entirely opt-in — with no hook script installed,
 every bell uses the plain `tmuxOpener.notifySoundPreset` and nothing changes.
 
 The extension can't see *why* Claude Code rang the bell, but Claude Code's hooks
-can: its `Stop` hook fires on completion and its `Notification` hook fires when
-it wants your input. A reference `tmux-opener-bell.sh` — called with a `stop` or
-`ask` argument from each hook — writes a reason file
+can: its `Stop` hook fires on completion, and its `Notification` hook fires on
+the events that want something from you. A reference `tmux-opener-bell.sh` —
+called with a `stop` or `ask` argument from each hook — writes a reason file
 (`${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/bell-<session>.<reason>.json`) and
-then rings the bell. The two reasons write **separate files**, so when both
-hooks fire for the same turn (Claude Code's `Notification` can also fire on
-completion) neither overwrites the other.
+then rings the bell. The two reasons write **separate files**, so a `stop` and an
+`ask` landing close together never overwrite each other; the reader resolves the
+pair instead (by notification type, or by mtime — see below).
 
 As the bell arrives, the extension reads both reason files and picks the sound:
 
 - Neither file fresh (within **30s**) → the plain `notifySoundPreset` (the
   no-hooks default; no added latency).
 - Exactly one fresh → that reason's sound.
-- Both fresh and written within **3s** of each other → treated as one completed
-  turn, so **`stop` wins** — a completion that also tripped `Notification`
-  still plays the completion sound, not the ask sound.
+- Both fresh and written within **3s** of each other (a co-fire) → the ask
+  sound **if** the ask reason file names a "waiting on you" notification type
+  (`permission_prompt`, `agent_needs_input`, `elicitation_dialog`), otherwise
+  **`stop` wins**. The `matcher` wiring only ever lets those three types reach
+  the ask hook, so an ask carrying one is a genuine approval wait even this close
+  to a completion; an ask with no recorded type (a legacy hook that predates the
+  field) folds into the completion as before.
 - Both fresh but more than **3s** apart → the more recent one wins (a genuinely
-  separate ask).
+  separate ask, or — with a *newer* stop — a completion that resolved an earlier
+  prompt). The notification type only tips the **3s** co-fire above; it never
+  overrides a newer stop here.
 
 When at least one reason file is fresh, the extension waits **250ms** for the
 co-firing sibling to land before choosing; a bell with no fresh reason file
 skips that wait entirely.
+
+The **3s** tie-break exists because `Notification` also fires when a turn
+*completes*, so one finished turn could write both files milliseconds apart and
+the pair had to resolve to `stop` rather than let the ask sound hijack a
+completion. To tell a **genuine** ask apart from that co-fire, the ask hook now
+records *which* notification type rang it — read from the `Notification` stdin —
+into the reason file, and the reader trusts that type **inside the 3s co-fire
+window**: a fresh ask naming one of the three "waiting on you" types (the
+`matcher` below admits only those three) plays as an ask even when its mtime
+sits right on a completion's. So a permission prompt arriving right after a turn
+finished now rings the ask sound with the "waiting for your input" toast — where
+it used to resolve to `stop` and claim the turn had finished.
+
+The type only tips that **3s** window; it does not override the newer-mtime rule.
+An ask whose prompt was answered long ago — a *newer* `stop` sits more than 3s
+after it — resolves to `stop`, so a completed turn is never mis-played as "waiting
+for your input" just because a real prompt fired earlier in the same turn.
+
+Within the co-fire window, an ask with **no recognizable type** still folds into
+`stop`: a legacy hook that predates the type field, or an ask a matcher-*less*
+`Notification` wiring co-fired from a completion (its recorded type is a
+completion type, not one of the three). So the completion-never-hijacked
+protection a matcher-less user relies on is unchanged.
 
 To enable it, install the scripts (above) and register the hooks in
 `~/.claude/settings.json`:
@@ -295,19 +386,36 @@ To enable it, install the scripts (above) and register the hooks in
     { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh stop" } ] }
   ],
   "Notification": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ] }
+    {
+      "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
+      "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ]
+    }
   ]
 }
 ```
+
+**This is setup B, so set `preferredNotifChannel` to a non-bell channel** (see
+the table above): from here on `tmux-opener-bell.sh` is what rings the BEL, and
+leaving Claude Code's own `terminal_bell` on adds a second, reason-less bell that
+can win the race for the shared cooldown and rob the ask of its sound.
+
+**The `matcher` is not optional.** `Notification` fires for *every* notification
+type Claude Code has — the completions and the idle reminder included — so a hook
+registered without one rings the "waiting for input" bell for events that are not
+waiting on you at all. The three types matched above are the ones that are: a
+permission prompt, an agent asking for input, an elicitation dialog.
+
+**Don't add the completion or idle types to it either** (`agent_completed`,
+`elicitation_complete`, `idle_prompt`). The completion bell already has exactly
+one owner — the `Stop` hook, or `subagent-idle-gate.sh main-stop` once you add
+the gate below — and a second source for it is how the premature bell the gate
+exists to prevent comes back.
 
 Pick the "waiting for input" sound with `tmuxOpener.notifySoundPresetOnAsk`
 (defaults to `siren`, so it stands out from the completion preset). It uses the
 same five presets as `notifySoundPreset`. The reason files resolve their path
 from `XDG_CACHE_HOME` exactly like the statusline bridge above, so the same
-"both sides must agree" caveat applies. If Claude Code's `Notification` hook is
-too noisy for you, you can narrow it with a `matcher` (`man`-style filtering is
-described in Claude Code's hooks docs) — that's an optional refinement, not
-required.
+"both sides must agree" caveat applies.
 
 ### Subagent-aware idle (fire the bell only on *true* idle)
 
@@ -398,7 +506,10 @@ instead of the bell directly and add the `PreToolUse` / `SubagentStart` /
     { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh reset" } ] }
   ],
   "Notification": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ] }
+    {
+      "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
+      "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-bell.sh ask" } ]
+    }
   ]
 }
 ```
@@ -406,20 +517,22 @@ instead of the bell directly and add the `PreToolUse` / `SubagentStart` /
 The `PreToolUse` hook is scoped with `"matcher": "Agent"` so it marks a subagent
 as pending only for Agent-tool calls, not every tool use; it is what closes the
 async launch-then-stop race described above. Keep the `Notification` hook pointed
-at `tmux-opener-bell.sh ask` — the gate only governs completion (idle), not the
-"waiting for input" reason.
+at `tmux-opener-bell.sh ask`, with the same matcher as in setup B — the gate only
+governs completion (idle), not the "waiting for input" reason, and the matcher is
+what keeps that hook from firing on the completion and idle types the gate owns.
 
 **Route every BEL through the gate — don't let a second source bypass it.**
-When you enable the gate, the `Stop` hook must call
-`subagent-idle-gate.sh main-stop`, **not** `tmux-opener-bell.sh stop`: the two
-are mutually exclusive, and wiring `Stop` to the bell directly (the basic
-bell-reason setup above) alongside the gate would ring on every main-turn stop
-and defeat the whole point. The gate calls `tmux-opener-bell.sh stop` itself,
-but only once it decides the session is *truly* idle. Also check Claude Code's
-own `preferredNotifChannel`: if it is set to `"terminal_bell"`, Claude Code
-rings its built-in bell directly, bypassing the gate entirely and notifying at
-the wrong moment. Set it to `"notifications_disabled"` (or another non-bell
-channel) so the gate is the single source of the completion BEL.
+This is setup C, and it has two sources to shut off, not one:
+
+- The `Stop` hook must call `subagent-idle-gate.sh main-stop`, **not**
+  `tmux-opener-bell.sh stop`. The two are mutually exclusive: keeping the direct
+  wiring from setup B alongside the gate would ring on every main-turn stop and
+  defeat the whole point. The gate calls `tmux-opener-bell.sh stop` itself, once
+  it decides the session is *truly* idle.
+- Claude Code's own `preferredNotifChannel` must not be `"terminal_bell"`, or
+  Claude Code rings its built-in bell directly — bypassing the gate entirely and
+  notifying at the wrong moment. Set it to `"notifications_disabled"` (or another
+  non-bell channel) so the gate is the single source of the completion BEL.
 
 ## Settings
 
