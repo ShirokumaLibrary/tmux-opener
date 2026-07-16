@@ -3,7 +3,7 @@
   "displayName": "Tmux Opener",
   "description": "%extension.description%",
   "l10n": "./l10n",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "shirokuma-library",
   "license": "MIT",
   "repository": {
