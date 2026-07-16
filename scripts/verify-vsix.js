@@ -63,6 +63,62 @@ const TARGET_MACHINE = {
   'darwin-arm64': { entry: `${NODE_PTY}/prebuilds/darwin-arm64/pty.node`, machine: 'arm64 (Mach-O)' },
 };
 
+// The highest GLIBC symbol version a linux pty.node is allowed to require. This
+// is the *ceiling of what the build toolchain emits*, not the base image's glibc
+// version — measured (#152) from the node:20-bookworm build of pty.node, whose
+// highest required symbol is GLIBC_2.34. Debian bookworm ships glibc 2.36, so
+// 2.34 is what that gcc/ld actually references, comfortably under 2.36.
+//
+// Keep this in sync with the base image in infra/ (node:20-bookworm / glibc
+// 2.36): bumping the base image can raise the emitted floor, and this is the one
+// gate that catches the opposite mistake — a linux VSIX built host-native on a
+// newer distro (e.g. Ubuntu's glibc 2.4x), which requires symbols absent from
+// the older glibc on a user's machine and dies at load with a
+// `version 'GLIBC_2.xx' not found` error the machine-type check can't see.
+const MAX_GLIBC = { major: 2, minor: 34 };
+
+/** Order two {major, minor} GLIBC versions numerically (a - b). */
+function compareGlibc(a, b) {
+  return a.major - b.major || a.minor - b.minor;
+}
+
+// The highest GLIBC symbol version an ELF *requires* — i.e. the newest glibc it
+// will refuse to load without. The versions the linker recorded live as
+// `GLIBC_x.y` strings in .dynstr (referenced by the .gnu.version_r verneed
+// entries); a node-pty .node is dynamically linked and holds no other GLIBC_
+// strings, so scanning the image for them and taking the numeric max yields the
+// required floor without decoding the section headers. latin1 is a byte-exact
+// 1:1 decode, so the ASCII `GLIBC_` markers survive intact for the regex.
+// Returns null if none are present (a statically linked or non-ELF image).
+function maxGlibcVersion(bin) {
+  const re = /GLIBC_(\d+)\.(\d+)/g;
+  const text = bin.toString('latin1');
+  let max = null;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const v = { major: Number(m[1]), minor: Number(m[2]) };
+    if (max === null || compareGlibc(v, max) > 0) max = v;
+  }
+  return max;
+}
+
+/**
+ * A problem string if this ELF's required GLIBC floor is unacceptable for a
+ * linux target, else null. Over MAX_GLIBC means it was built against a newer
+ * glibc than the bookworm base image; no GLIBC symbols at all means we cannot
+ * vouch for the floor (a linux pty.node should always carry them).
+ */
+function glibcProblem(bin, entryName) {
+  const req = maxGlibcVersion(bin);
+  if (req === null) {
+    return `${entryName}: no GLIBC version symbols found — cannot verify the glibc floor (expected a dynamically linked ELF)`;
+  }
+  if (compareGlibc(req, MAX_GLIBC) > 0) {
+    return `${entryName} requires GLIBC_${req.major}.${req.minor}, newer than the MAX_GLIBC ${MAX_GLIBC.major}.${MAX_GLIBC.minor} floor — built against a newer glibc than the node:20-bookworm base image (rebuild it there; a host-native build on a newer distro will not load on older glibc)`;
+  }
+  return null;
+}
+
 /** Read a zip's central directory: entry name -> {mode, offset}. */
 function readCentralDirectory(buf) {
   let eocd = buf.length - 22;
@@ -145,59 +201,77 @@ function targetOf(file) {
   return `${m[1]}-${m[2]}`;
 }
 
-let failed = false;
-for (const file of process.argv.slice(2)) {
-  const target = targetOf(file);
-  const buf = fs.readFileSync(file);
-  const entries = readCentralDirectory(buf);
-  const problems = [];
+function main(files) {
+  let failed = false;
+  for (const file of files) {
+    const target = targetOf(file);
+    const buf = fs.readFileSync(file);
+    const entries = readCentralDirectory(buf);
+    const problems = [];
 
-  // Dev-only trees must not have shipped. Name the offending entries: the point
-  // of failing here is to say *which* exclude stopped matching.
-  const leaked = [...entries.keys()].filter(
-    (name) =>
-      DEV_ONLY_PREFIXES.some((p) => name.startsWith(p)) || DEV_ONLY_FILES.includes(name),
-  );
-  if (leaked.length) {
-    const shown = leaked.slice(0, 5).join(', ');
-    const more = leaked.length > 5 ? `, … (${leaked.length} entries)` : '';
-    problems.push(
-      `dev-only files leaked into the VSIX — check .vscodeignore: ${shown}${more}`,
+    // Dev-only trees must not have shipped. Name the offending entries: the
+    // point of failing here is to say *which* exclude stopped matching.
+    const leaked = [...entries.keys()].filter(
+      (name) =>
+        DEV_ONLY_PREFIXES.some((p) => name.startsWith(p)) || DEV_ONLY_FILES.includes(name),
     );
-  }
+    if (leaked.length) {
+      const shown = leaked.slice(0, 5).join(', ');
+      const more = leaked.length > 5 ? `, … (${leaked.length} entries)` : '';
+      problems.push(
+        `dev-only files leaked into the VSIX — check .vscodeignore: ${shown}${more}`,
+      );
+    }
 
-  const expected = TARGET_MACHINE[target];
-  const pty = entries.get(expected.entry);
-  let machine = '(missing)';
-  if (!pty) {
-    problems.push(`${expected.entry} is missing — vsce dropped the binary this target runs`);
-  } else {
-    machine = machineOf(readEntry(buf, pty));
-    if (machine !== expected.machine) {
-      problems.push(`${expected.entry} is ${machine}, expected ${expected.machine}`);
+    const expected = TARGET_MACHINE[target];
+    const pty = entries.get(expected.entry);
+    let machine = '(missing)';
+    if (!pty) {
+      problems.push(`${expected.entry} is missing — vsce dropped the binary this target runs`);
+    } else {
+      const bin = readEntry(buf, pty);
+      machine = machineOf(bin);
+      if (machine !== expected.machine) {
+        problems.push(`${expected.entry} is ${machine}, expected ${expected.machine}`);
+      }
+      // Only linux runs build/Release directly (darwin falls through to the
+      // Mach-O prebuild, checked above), so the GLIBC floor is a linux-only
+      // concern — a Mach-O image carries no GLIBC symbols and would false-flag.
+      if (target.startsWith('linux')) {
+        const glibc = glibcProblem(bin, expected.entry);
+        if (glibc) problems.push(glibc);
+      }
+    }
+
+    // Only macOS runs spawn-helper (src/unix/pty.cc guards it with
+    // `#if !defined(__APPLE__)` inverted); the Linux VSIXs carry the darwin
+    // prebuilds as dead weight, and their modes there are irrelevant.
+    if (target.startsWith('darwin')) {
+      const helper = `${NODE_PTY}/prebuilds/${target}/spawn-helper`;
+      const e = entries.get(helper);
+      if (!e) {
+        problems.push(`${helper} is missing`);
+      } else if (!(e.mode & 0o111)) {
+        problems.push(`${helper} is ${e.mode.toString(8)} — macOS cannot posix_spawnp it`);
+      }
+    }
+
+    if (problems.length) {
+      failed = true;
+      console.error(`FAIL ${file}`);
+      for (const p of problems) console.error(`  - ${p}`);
+    } else {
+      console.log(`ok   ${path.basename(file)}  ${target}  ${machine}`);
     }
   }
-
-  // Only macOS runs spawn-helper (src/unix/pty.cc guards it with
-  // `#if !defined(__APPLE__)` inverted); the Linux VSIXs carry the darwin
-  // prebuilds as dead weight, and their modes there are irrelevant.
-  if (target.startsWith('darwin')) {
-    const helper = `${NODE_PTY}/prebuilds/${target}/spawn-helper`;
-    const e = entries.get(helper);
-    if (!e) {
-      problems.push(`${helper} is missing`);
-    } else if (!(e.mode & 0o111)) {
-      problems.push(`${helper} is ${e.mode.toString(8)} — macOS cannot posix_spawnp it`);
-    }
-  }
-
-  if (problems.length) {
-    failed = true;
-    console.error(`FAIL ${file}`);
-    for (const p of problems) console.error(`  - ${p}`);
-  } else {
-    console.log(`ok   ${path.basename(file)}  ${target}  ${machine}`);
-  }
+  return failed;
 }
 
-process.exit(failed ? 1 : 0);
+// Export the pure glibc logic for the unit suite; run the CLI only when invoked
+// directly (node scripts/verify-vsix.js …), the same shape the other testable
+// scripts use so `require()` from a test doesn't spawn the CLI or call exit().
+module.exports = { MAX_GLIBC, compareGlibc, maxGlibcVersion, glibcProblem };
+
+if (require.main === module) {
+  process.exit(main(process.argv.slice(2)) ? 1 : 0);
+}

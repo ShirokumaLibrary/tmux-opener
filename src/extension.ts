@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { execFile, execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as fs from 'node:fs';
 import * as pty from 'node-pty';
 import {
@@ -20,7 +21,9 @@ import {
   nextSessionName,
   profileSuffix,
   relatedSessions,
+  resolveToolActions,
   sessionBaseName,
+  updateSessionName,
   type TmuxSession,
 } from './session-name.js';
 import {
@@ -123,6 +126,7 @@ interface TmuxProfileConfig {
   command: string;
   description?: string;
   sessionSuffix?: string;
+  updateCommand?: string;
 }
 
 /** A profile resolved for display: its settings key becomes the label. */
@@ -136,11 +140,11 @@ interface TmuxProfile extends TmuxProfileConfig {
  * the profile from the menu, and any other key adds or overrides one.
  */
 const DEFAULT_PROFILES: Record<string, TmuxProfileConfig> = {
-  'Claude Code': { command: 'claude' },
-  Codex: { command: 'codex' },
+  'Claude Code': { command: 'claude', updateCommand: 'claude update' },
+  Codex: { command: 'codex', updateCommand: 'codex update' },
   Gemini: { command: 'gemini' },
-  Cursor: { command: 'cursor-agent' },
-  Grok: { command: 'grok' },
+  Cursor: { command: 'cursor-agent', updateCommand: 'cursor-agent update' },
+  Grok: { command: 'grok', updateCommand: 'grok update' },
 };
 
 /**
@@ -350,6 +354,12 @@ function getTerminalFontConfig(): { fontFamily: string; fontSize: number } {
  * previous pty (a plain tmux client exit — the tmux session itself survives
  * on the server) and starts a new one.
  */
+/**
+ * `workspaceState` key holding `sessionCommands` across reloads (#133).
+ * Namespaced under the extension id so it can't collide with another key.
+ */
+const SESSION_COMMANDS_STATE_KEY = 'tmuxOpener.sessionCommands';
+
 class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
   private resolveView!: (view: vscode.WebviewView) => void;
@@ -399,9 +409,29 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    * ignores the command when the session already exists, so replaying it on
    * re-attach is harmless — and it means a profile session that was killed
    * outside VS Code comes back as its profile rather than a bare shell.
-   * Extension-host lifetime only; tmux is still the source of truth.
+   * Restored from `workspaceState` on construction and persisted on every set
+   * (#133) so tool identification survives a window reload; tmux is still the
+   * source of truth, and a name reused for a different command is left to
+   * self-correct (the same trade-off the replay invariant already accepts).
    */
   private readonly sessionCommands = new Map<string, string>();
+  /**
+   * The in-flight tool update (#135), set for the lifetime of the transient
+   * `<base>--update` session that runs a tool's `updateCommand`. `session` is
+   * that transient's name, `returnTo` the tool session that was attached before
+   * the update began (where the view returns on completion — not the
+   * `attachNextAfter` list-head), `toolLabel` names the tool for the result
+   * toast, and `marker` is the temp file the wrapped command writes its exit
+   * code into. Tracked so the transient can be hidden from the sidebar list and
+   * the fallback while it runs, and so `onExit` can route completion to the
+   * dedicated return path instead of `attachNextAfter`.
+   */
+  private pendingUpdate?: {
+    session: string;
+    returnTo: string;
+    toolLabel: string;
+    marker: string;
+  };
   /**
    * Guards the missing-tmux notification so the passive attach on view-open
    * pops it at most once per activation (a window reload shouldn't nag);
@@ -419,10 +449,34 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    */
   private notifySoundToggleInFlight = false;
 
-  constructor(private readonly extensionUri: vscode.Uri) {
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly workspaceState: vscode.Memento,
+  ) {
     this.viewReady = new Promise((resolve) => {
       this.resolveView = resolve;
     });
+    // Restore the recorded launch commands so tool identification (and the
+    // command replay in `attachSession`) survives a window reload (#133).
+    const stored = this.workspaceState.get<Record<string, string>>(SESSION_COMMANDS_STATE_KEY);
+    if (stored) {
+      for (const [name, command] of Object.entries(stored)) {
+        this.sessionCommands.set(name, command);
+      }
+    }
+  }
+
+  /**
+   * Mirror `sessionCommands` into `workspaceState`. A `Map` isn't serializable,
+   * so it goes as a plain record; the restore in the constructor reverses it.
+   * Fire-and-forget: a lost write only means a reload falls back to attaching
+   * without the remembered command, which tmux's `-A` already tolerates.
+   */
+  private persistSessionCommands(): void {
+    void this.workspaceState.update(
+      SESSION_COMMANDS_STATE_KEY,
+      Object.fromEntries(this.sessionCommands),
+    );
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -487,6 +541,10 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       void this.toggleNotifySound();
     } else if (message.type === 'killSession' && message.name) {
       void this.killSession(message.name);
+    } else if (message.type === 'restartSession') {
+      void this.restartCurrentSession();
+    } else if (message.type === 'updateTool') {
+      void this.updateCurrentTool();
     } else if (message.type === 'copy' && message.text) {
       // The webview's own clipboard access needs transient user activation,
       // which an OSC 52 sequence arriving from the pty never has.
@@ -1015,6 +1073,11 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
         // current state rather than the action.
         notifySoundOn: vscode.l10n.t('Notification sound: on'),
         notifySoundOff: vscode.l10n.t('Notification sound: off'),
+        // Toolbar action titles for the running tool ({0} is the tool label,
+        // e.g. "Claude Code"). The webview replaces its English fallback with
+        // these once l10n arrives, so they must ship here too (#136).
+        updateTool: vscode.l10n.t('Update {0}', '{0}'),
+        restartTool: vscode.l10n.t('Restart {0}', '{0}'),
         // {0} is a session name.
         attachedElsewhere: vscode.l10n.t('{0} (attached elsewhere)', '{0}'),
         // {0} is a shell command.
@@ -1044,7 +1107,12 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   pushSessions(): void {
     const baseName = currentBaseName();
     if (baseName && this.view) {
-      const related = relatedSessions(baseName, listTmuxSessions());
+      // The transient `<base>--update` session reads as related to the base, so
+      // filter it out — it is an ephemeral update runner, not a session the user
+      // should see or switch to (#135).
+      const related = relatedSessions(baseName, listTmuxSessions()).filter(
+        (s) => s.name !== this.pendingUpdate?.session,
+      );
       this.view.webview.postMessage({
         type: 'sessions',
         sessions: related.map((s) => ({ name: s.name, attached: s.attached, current: s.name === this.currentSession })),
@@ -1053,6 +1121,28 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     // The session set or current session may have just changed, so re-evaluate
     // whether the background poller should be running.
     this.updateBellPolling();
+    // The attached session may have changed, so re-tell the webview which
+    // toolbar tool-actions it earns.
+    this.pushToolActions();
+  }
+
+  /**
+   * Tell the webview which toolbar tool-actions the currently attached session
+   * earns (#134). Resolved from the session's launch command through
+   * `resolveToolActions` (#133, pure): a command matching a profile earns
+   * `canRestart`, and `canUpdate` when that profile declares an `updateCommand`;
+   * an unknown command — or no attached session at all — earns nothing, so the
+   * webview shows nothing rather than an action the session can't perform. Sent
+   * from `pushSessions()` alone (its single delivery point), which every session
+   * switch and session-set change already funnels through — the two points where
+   * the attached command can change.
+   */
+  private pushToolActions(): void {
+    const command = this.currentSession
+      ? this.sessionCommands.get(this.currentSession)
+      : undefined;
+    const actions = resolveToolActions(command, readProfiles());
+    this.view?.webview.postMessage({ type: 'toolActions', ...actions });
   }
 
   /**
@@ -1066,7 +1156,11 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     if (!baseName) {
       return undefined;
     }
-    return relatedSessions(baseName, listTmuxSessions()).find((s) => s.name !== exclude)?.name;
+    // Never fall back onto the transient update session (#135): it reads as
+    // related but is ephemeral, and its completion has a dedicated return path.
+    return relatedSessions(baseName, listTmuxSessions()).find(
+      (s) => s.name !== exclude && s.name !== this.pendingUpdate?.session,
+    )?.name;
   }
 
   /**
@@ -1232,6 +1326,19 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   private async attachSession(sessionName: string, command?: string, interactive = false): Promise<void> {
     const view = this.view ?? (await this.viewReady);
 
+    // Switching to any session other than an in-flight update's own transient
+    // means that update is being abandoned (a sidebar click, a restart, or the
+    // kill fallback landing elsewhere). The transient's `onExit` won't run the
+    // completion path — this `attachSession` replaces its pty, so the identity
+    // guard in `onExit` no-ops it — so release the guard here, or Update stays
+    // wedged (and its marker + wrapped `sessionCommands` entry leak) for the
+    // rest of the activation (#135 F2). Re-attaching to the transient itself
+    // (the detach recovery in `finishUpdate`) keeps the update, so it is
+    // exempt; the completion path clears `pendingUpdate` before it returns.
+    if (this.pendingUpdate && this.pendingUpdate.session !== sessionName) {
+      this.cancelPendingUpdate();
+    }
+
     // Nothing here works without tmux. Catch it before pty.spawn so the pane
     // explains itself (and, when the user asked, a notification points at how
     // to install it) instead of surfacing a bare `spawn tmux ENOENT`.
@@ -1249,6 +1356,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 
     if (command) {
       this.sessionCommands.set(sessionName, command);
+      this.persistSessionCommands();
     }
     const shellCommand = command ?? this.sessionCommands.get(sessionName);
 
@@ -1295,6 +1403,10 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     // A tmux server exists now — enable bell monitoring so background windows
     // set window_bell_flag for the poller to read (once; idempotent).
     this.enableMonitorBell();
+    // Tool-actions for the newly attached session are already sent via the
+    // `pushSessions()` above (its single delivery point), so no separate
+    // `pushToolActions()` is needed here — it would only re-send the same
+    // message with unchanged inputs.
 
     // The webview's last known fit may be stale (first load, or the panel
     // was resized while a different session was showing) — ask it to
@@ -1346,6 +1458,15 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       if (this.currentSession === sessionName) {
         this.currentSession = undefined;
       }
+      // A finished tool update: the transient `<base>--update` session's only
+      // process (the `updateCommand`) exited, so the session self-destructed.
+      // Route to the dedicated completion path — return to the original tool
+      // session and report the result — instead of `attachNextAfter`'s list-head
+      // (#135, design #130 unresolved item (2)).
+      if (this.pendingUpdate?.session === sessionName) {
+        void this.finishUpdate();
+        return;
+      }
       // The client exited on its own: `exit` in the last tmux window, an
       // external kill-session, or a detach. Land on the next session rather
       // than leaving a frozen, dead pane.
@@ -1381,10 +1502,20 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       return;
     }
 
+    // Use an exact-match target (`=<name>`) so tmux's prefix fallback can't
+    // kill an unrelated session whose name merely starts with this one (e.g.
+    // killing `foo` must not also match `foo-2`), #135 R1.
     try {
-      execFileSync('tmux', ['kill-session', '-t', name]);
+      execFileSync('tmux', ['kill-session', '-t', `=${name}`]);
     } catch {
       // Session may already be gone.
+    }
+
+    // Killing the in-flight update's own transient aborts the update; drop the
+    // guard and clean up its marker/command entry so Update isn't wedged (#135
+    // F2). Killing an unrelated background session leaves the update running.
+    if (this.pendingUpdate?.session === name) {
+      this.cancelPendingUpdate();
     }
 
     if (this.currentSession !== name) {
@@ -1403,6 +1534,322 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     await this.attachNextAfter(name, 'killed');
   }
 
+  /**
+   * Restart the currently attached session's tool: end it and respawn via
+   * `attachSession`, which replays the remembered launch command through
+   * `new-session -A` (#134). Restarting drops the running tool's in-memory
+   * state, so — exactly like `killSession` — it is gated behind a `{ modal: true }`
+   * confirmation. The kill/respawn discipline is `killSession`'s: clear
+   * `this.ptyProcess` *before* `dead.kill()`, so the client's own `onExit`
+   * compares unequal and no-ops (identity, not name — `:onExit`), leaving us,
+   * not the `attachNextAfter` fallback, to own the respawn. Only the attached
+   * session can be restarted; arbitrary sessions are out of scope for v1
+   * (design #130).
+   */
+  async restartCurrentSession(): Promise<void> {
+    const name = this.currentSession;
+    if (!name) {
+      vscode.window.showInformationMessage(
+        vscode.l10n.t('Tmux Opener: no active session to restart.'),
+      );
+      return;
+    }
+
+    const restart = vscode.l10n.t('Restart');
+    const confirmed = await vscode.window.showWarningMessage(
+      vscode.l10n.t(
+        'Restart tmux session "{0}"? This ends the running tool and starts it again, losing its in-memory state.',
+        name,
+      ),
+      { modal: true },
+      restart,
+    );
+    if (confirmed !== restart) {
+      return;
+    }
+
+    // The attached session can drift while the modal blocks: the pty we are
+    // looking at may self-exit (its tool quits) and `onExit`/`attachNextAfter`
+    // land us on a different session. Re-check, exactly as `killSession` does,
+    // so a confirmed restart never kills the pty of a session we drifted onto.
+    if (this.currentSession !== name) {
+      this.pushSessions();
+      return;
+    }
+
+    // Restarting the update transient itself is not a respawn: the transient
+    // has no tool to restart, and `cancelPendingUpdate` deletes its wrapped
+    // `sessionCommands` entry, so respawning would spawn a bare `<base>--update`
+    // shell with no command and then block every later Update on the leftover
+    // session (#135 R2). Instead abort the in-flight update and return to the
+    // tool the update began from. Capture `returnTo` before the cancel clears
+    // the guard.
+    if (this.pendingUpdate?.session === name) {
+      const returnTo = this.pendingUpdate.returnTo;
+      this.cancelPendingUpdate();
+      await this.attachSession(returnTo);
+      return;
+    }
+
+    // Read the launch command before the kill so the respawn is explicit;
+    // attachSession would replay it from sessionCommands anyway.
+    const command = this.sessionCommands.get(name);
+
+    // Clear the field before either kill so the client's onExit is a no-op
+    // (identity compare) and the fallback can't respawn the session we are
+    // about to respawn ourselves. Both kills run synchronously before the event
+    // loop can dispatch the exit, so there is no window where onExit sees the
+    // pty still installed.
+    const dead = this.ptyProcess;
+    this.ptyProcess = undefined;
+    this.currentSession = undefined;
+
+    // Detaching the client leaves the server-side session alive, so the tool
+    // would just keep running. Kill the session itself to end the tool; the
+    // respawn below recreates it via `new-session -A`. Use an exact-match
+    // target (`=<name>`) so tmux's prefix fallback can't kill an unrelated
+    // session whose name merely starts with this one (e.g. killing `foo` must
+    // not also match `foo-2`), #135 R1.
+    try {
+      execFileSync('tmux', ['kill-session', '-t', `=${name}`]);
+    } catch {
+      // Session may already be gone; the respawn recreates it regardless.
+    }
+    dead?.kill();
+
+    // new-session -A recreates the killed session and runs the remembered
+    // command as its only process. Passing command explicitly re-records it (a
+    // no-op when unchanged) and drives the respawn even if the map lacked it.
+    await this.attachSession(name, command);
+  }
+
+  /**
+   * Update the currently attached tool (#135, design #130 case A). Resolves the
+   * attached session's launch command to a profile and runs its `updateCommand`
+   * as the *only* process of a transient `<base>--update` tmux session — a real
+   * pty (TTY, live output), the same "command = session" machinery profile
+   * sessions use — so a tool that changes behavior under a TTY, or (unlike the
+   * four measured here) prompts, still runs and reads correctly. The exit code
+   * is captured out-of-band: tmux runs the session command through a shell, so
+   * the command is wrapped as `<updateCommand>; printf %s $? > <marker>` and the
+   * real exit code is read from `<marker>` in `finishUpdate` rather than inferred
+   * from the tmux client's own exit. Only reachable when the toolbar shows the
+   * Update button, i.e. the profile declares an `updateCommand`; the guards below
+   * keep it a no-op otherwise. One update at a time.
+   */
+  async updateCurrentTool(): Promise<void> {
+    if (this.pendingUpdate) {
+      return;
+    }
+    const original = this.currentSession;
+    if (!original) {
+      vscode.window.showInformationMessage(
+        vscode.l10n.t('Tmux Opener: no active session to update.'),
+      );
+      return;
+    }
+    const baseName = currentBaseName();
+    if (!baseName) {
+      return;
+    }
+    const command = this.sessionCommands.get(original);
+    const match = command
+      ? readProfiles().find((p) => p.command === command)
+      : undefined;
+    const updateCommand = match?.updateCommand;
+    if (!match || !updateCommand) {
+      // The toolbar hides the Update button unless a profile with an
+      // `updateCommand` matched, so this only guards a stale/racy message —
+      // show nothing rather than run something wrong.
+      return;
+    }
+
+    const session = updateSessionName(baseName);
+    // The `<base>--update` name is shared: a user profile whose suffix/label
+    // slugs to `update` (#135 F5) or a second VS Code window on the same folder
+    // running its own update (#135 F6) can already hold it. Attaching with `-A`
+    // would silently join that session and drop our wrapped command — the update
+    // never runs, the marker is never written, and `pendingUpdate` sticks to a
+    // session we don't own. Refuse up front instead.
+    if (this.updateSessionAlive(session)) {
+      vscode.window.showErrorMessage(
+        vscode.l10n.t(
+          'Tmux Opener: a session named "{0}" already exists; close it before updating.',
+          session,
+        ),
+      );
+      return;
+    }
+    const marker = join(
+      tmpdir(),
+      `tmux-opener-update-${Date.now()}-${Math.random().toString(36).slice(2)}.code`,
+    );
+    this.pendingUpdate = { session, returnTo: original, toolLabel: match.label, marker };
+
+    // tmux runs the session command through its default-shell (`$SHELL`) with
+    // `-c`, so the exit-code capture must not assume POSIX: a fish/csh login
+    // shell parses `$?` as an error and the whole line — the update included —
+    // never runs (#135 F3). Pin the pipeline to POSIX `sh` explicitly. The inner
+    // command is single-quoted for `sh -c`; every `'` inside it (the marker
+    // quotes, or a quote in the user's `updateCommand`) is escaped with the
+    // portable `'\''` idiom, which fish and csh pass through to `sh` unchanged.
+    // The marker path itself comes from `tmpdir()` and a random token, so it
+    // holds no quote to break out with.
+    const inner = `${updateCommand}; printf %s $? > '${marker}'`;
+    const wrapped = `sh -c '${inner.replace(/'/g, "'\\''")}'`;
+    await this.attachSession(session, wrapped);
+
+    // `attachSession` swallows a missing/failed-to-spawn tmux (it reports the
+    // reason itself and leaves `currentSession` unset). If the transient never
+    // attached, `onExit` will never fire for it, so drop the guard now or Update
+    // is wedged for the rest of the activation (#135 F2). The guard inside
+    // `attachSession` doesn't cover this: the name it attached is the transient's
+    // own, so it (correctly) left `pendingUpdate` alone.
+    if (this.currentSession !== session) {
+      this.cancelPendingUpdate();
+    }
+  }
+
+  /**
+   * Whether a tmux session exists server-side. Uses an exact-match target
+   * (`=<name>`) so a prefix like `<base>--update--2` can't answer for
+   * `<base>--update`. Any failure (no such session, or tmux gone) reads as
+   * "not alive" — the callers (#135 F1 detach detection, F5/F6 collision
+   * refusal) all want the safe answer when tmux can't be queried.
+   */
+  private updateSessionAlive(session: string): boolean {
+    try {
+      execFileSync('tmux', ['has-session', '-t', `=${session}`], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Abort tracking of an in-flight update without waiting for its transient
+   * session to exit (#135 F2). Every deliberate teardown — a session switch, a
+   * kill/restart of the transient, `dispose`, or a failed update spawn — reaches
+   * this instead of `finishUpdate`, because `onExit`'s identity guard no-ops the
+   * transient's own exit once we've replaced its pty. Clears the guard and cleans
+   * up the marker file and the polluting wrapped `sessionCommands` entry (so a
+   * reload can't surface `<base>--update` in the list); the server-side session,
+   * if any survives, is left to tmux and the caller's own pty teardown.
+   */
+  private cancelPendingUpdate(): void {
+    const info = this.pendingUpdate;
+    if (!info) {
+      return;
+    }
+    this.pendingUpdate = undefined;
+    try {
+      fs.unlinkSync(info.marker);
+    } catch {
+      // Never written, or already cleaned up; nothing to remove.
+    }
+    if (this.sessionCommands.delete(info.session)) {
+      this.persistSessionCommands();
+    }
+  }
+
+  /**
+   * Complete an update whose transient session just self-exited (#135). Reads
+   * the captured exit code, cleans up the transient (temp marker, the polluting
+   * `sessionCommands` entry for the wrapped command, and any lingering tmux
+   * session), returns the view to the tool session that was attached before the
+   * update — explicitly, not via `attachNextAfter`'s list-head — and reports the
+   * result: an exit-code toast (0 = success, anything else or a missing marker =
+   * failure) carrying a "Restart <tool>" action that runs the #134 restart path.
+   */
+  private async finishUpdate(): Promise<void> {
+    const info = this.pendingUpdate;
+    if (!info) {
+      return;
+    }
+
+    // Read the real update exit code the wrapper captured. A missing/unparsable
+    // marker means the pipeline never wrote it — but `onExit` fires for a client
+    // *detach* (`C-b d`, or an external `detach-client`) too, and that alone
+    // can't be told apart from a genuine failure by the marker's absence. So
+    // check whether the transient session is still alive server-side: if it is,
+    // the command is still running and this is a detach, not completion — never
+    // kill it (that SIGHUPs an install in progress, #135 F1). Re-attach to keep
+    // watching, leaving `pendingUpdate` set so the eventual real exit still lands
+    // here. Only a marker that was written, or a session that is actually gone,
+    // counts as completion.
+    let exitCode: number | undefined;
+    try {
+      const raw = fs.readFileSync(info.marker, 'utf8').trim();
+      const parsed = Number.parseInt(raw, 10);
+      if (Number.isInteger(parsed)) {
+        exitCode = parsed;
+      }
+    } catch {
+      // Marker unreadable — either a genuine failure or a mid-update detach.
+    }
+
+    if (exitCode === undefined && this.updateSessionAlive(info.session)) {
+      // Detached mid-update: the install is still going. Re-attach to the
+      // transient (its `onExit` will route back here when it truly finishes) and
+      // do not clear the guard or kill anything.
+      await this.attachSession(info.session);
+      return;
+    }
+
+    // Clear the guard, unlink the marker, and drop the polluting wrapped
+    // `sessionCommands` entry — the exact cleanup `cancelPendingUpdate` performs,
+    // so reuse it rather than re-implementing (drift-proof, #135 R6).
+    this.cancelPendingUpdate();
+    // The command exiting already destroyed the session; kill defensively so a
+    // stray `<base>--update` can never survive to be re-attached. Use an
+    // exact-match target (`=<name>`) so tmux's prefix fallback can't kill an
+    // unrelated session whose name merely starts with `<base>--update` (e.g. a
+    // user profile `foo--updater`), #135 R1.
+    try {
+      execFileSync('tmux', ['kill-session', '-t', `=${info.session}`]);
+    } catch {
+      // Expected: the session self-destructed when its command exited.
+    }
+
+    // Return to the tool session the update began from — explicitly, so the
+    // list-head fallback can't land us elsewhere. `new-session -A` recreates it
+    // (replaying its remembered command) if it was gone, so the user always
+    // lands back on their tool. `returnTo` is always set (the caller guards
+    // `currentSession` non-undefined), so there is no default-view fallback.
+    await this.attachSession(info.returnTo);
+
+    // Report the outcome. The exit codes were measured under a TTY (0 = success
+    // for all four shipped tools; see #135) so the toast drives off the code.
+    const restart = vscode.l10n.t('Restart {0}', info.toolLabel);
+    const choice =
+      exitCode === 0
+        ? await vscode.window.showInformationMessage(
+            vscode.l10n.t('{0} updated.', info.toolLabel),
+            restart,
+          )
+        : await vscode.window.showErrorMessage(
+            exitCode === undefined
+              ? vscode.l10n.t('Updating {0} failed.', info.toolLabel)
+              : vscode.l10n.t('Updating {0} failed (exit code {1}).', info.toolLabel, exitCode),
+            restart,
+          );
+    // The toast is non-modal and can sit for a while; the view may have drifted
+    // to another session (the user switched, or the tool self-exited and the
+    // fallback landed elsewhere) by the time it's clicked. Restarting
+    // `currentSession` blindly would then restart the wrong tool — the label
+    // promised one thing and would act on another (#135 F4). Only restart when
+    // we're still on the session the update returned to.
+    if (choice === restart) {
+      if (this.currentSession === info.returnTo) {
+        await this.restartCurrentSession();
+      } else {
+        vscode.window.showInformationMessage(
+          vscode.l10n.t('Tmux Opener: switched away from "{0}"; not restarting.', info.returnTo),
+        );
+      }
+    }
+  }
+
   dispose(): void {
     // Stop the background bell poller so its timer can't outlive the provider.
     if (this.pollTimer) {
@@ -1412,6 +1859,11 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     // Same discipline for the bell-outcome timers (#81): settle every pending
     // bell as `unknown` so none of them survives the provider.
     this.settleAllSoundAcks();
+    // Drop any in-flight update tracking: onExit won't run the completion path
+    // once we tear the pty down below, so this cleans the marker and the wrapped
+    // `sessionCommands` entry (keeping `<base>--update` out of the list a reload
+    // would rebuild) rather than leak them (#135 F2).
+    this.cancelPendingUpdate();
     // Clear the field before killing: onExit only acts on the pty still
     // installed, so this stops the exit from being mistaken for a session
     // ending on its own and respawning tmux as the extension shuts down.
@@ -1485,6 +1937,10 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     border-radius: 5px;
   }
   .toolbar-action:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+  /* .toolbar-action sets display:flex, which outranks the UA [hidden] rule, so
+     the tool-action buttons (#136) need this to honour their default-hidden
+     state until a toolActions message reveals them. */
+  .toolbar-action[hidden] { display: none; }
   #toolbar .codicon { font-size: 16px; line-height: 16px; }
   #session-title {
     flex: 1;
@@ -1754,6 +2210,12 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       <span class="codicon codicon-chevron-down"></span>
     </div>
   </div>
+  <div class="toolbar-action" id="updateTool" role="button" title="${t('Update')}" hidden>
+    <span class="codicon codicon-cloud-download"></span>
+  </div>
+  <div class="toolbar-action" id="restartTool" role="button" title="${t('Restart')}" hidden>
+    <span class="codicon codicon-debug-restart"></span>
+  </div>
   <div class="toolbar-action" id="toggleNotifySound" role="button" aria-pressed="false" title="${t('Notification sound: off')}">
     <span class="codicon codicon-bell-slash"></span>
   </div>
@@ -1845,7 +2307,7 @@ async function pickAndOpenSession(terminalProvider: TmuxTerminalViewProvider): P
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const terminalProvider = new TmuxTerminalViewProvider(context.extensionUri);
+  const terminalProvider = new TmuxTerminalViewProvider(context.extensionUri, context.workspaceState);
 
   const openSessionCmd = vscode.commands.registerCommand('tmux-opener.openSession', () =>
     pickAndOpenSession(terminalProvider),

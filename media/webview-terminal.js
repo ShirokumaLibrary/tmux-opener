@@ -320,6 +320,8 @@
     notFoundOnPath: '"{0}" was not found on PATH',
     notifySoundOn: 'Notification sound: on',
     notifySoundOff: 'Notification sound: off',
+    updateTool: 'Update {0}',
+    restartTool: 'Restart {0}',
   };
   const format = (template, value) => template.replace('{0}', value);
 
@@ -466,6 +468,39 @@
   document.getElementById('openSettings').addEventListener('click', () => {
     closeContextMenu();
     vscodeApi.postMessage({ type: 'openSettings' });
+  });
+
+  // The tool-action buttons (#136): update and restart the AI tool running as the
+  // attached session. Both are hidden by default and only revealed by a
+  // `toolActions` message (#134) — the host resolves what the current session
+  // earns (a matched profile earns restart; one declaring an updateCommand also
+  // earns update) and is the source of truth, so an unknown/plain-shell session
+  // shows neither. The click only *asks* the host to act; the host owns the
+  // restart/update logic (#134/#135). `toolLabel` names the tool in each title.
+  const updateToolBtn = document.getElementById('updateTool');
+  const restartToolBtn = document.getElementById('restartTool');
+  // Remembered so a later `l10n` message can re-render the titles (the tool
+  // label is the host's, but the "Update"/"Restart" wording comes from strings).
+  let lastToolActions = { canUpdate: false, canRestart: false, toolLabel: '' };
+  function applyToolActions(actions) {
+    lastToolActions = actions;
+    updateToolBtn.hidden = !actions.canUpdate;
+    restartToolBtn.hidden = !actions.canRestart;
+    const label = actions.toolLabel || '';
+    if (actions.canUpdate) {
+      updateToolBtn.title = format(strings.updateTool, label);
+    }
+    if (actions.canRestart) {
+      restartToolBtn.title = format(strings.restartTool, label);
+    }
+  }
+  updateToolBtn.addEventListener('click', () => {
+    closeContextMenu();
+    vscodeApi.postMessage({ type: 'updateTool' });
+  });
+  restartToolBtn.addEventListener('click', () => {
+    closeContextMenu();
+    vscodeApi.postMessage({ type: 'restartSession' });
   });
 
   // The toolbar bell toggle for tmuxOpener.notifySound (#127). The webview has no
@@ -1084,11 +1119,24 @@
       if (notifySoundEnabled !== undefined) {
         applyNotifySoundState(notifySoundEnabled);
       }
+      // Re-render the tool-action titles with the landed wording (#136), keeping
+      // their current shown/hidden state.
+      applyToolActions(lastToolActions);
       return;
     }
     if (msg.type === 'profiles') {
       profiles = msg.profiles;
       closeContextMenu();
+      return;
+    }
+    if (msg.type === 'toolActions') {
+      // Doesn't touch the terminal — safe before init completes, like `sessions`.
+      // Pass only the fields we act on, so `lastToolActions` never carries `type`.
+      applyToolActions({
+        canUpdate: msg.canUpdate,
+        canRestart: msg.canRestart,
+        toolLabel: msg.toolLabel,
+      });
       return;
     }
     if (msg.type === 'playSound') {

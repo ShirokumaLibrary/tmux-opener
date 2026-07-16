@@ -3,7 +3,7 @@
   "displayName": "Tmux Opener",
   "description": "%extension.description%",
   "l10n": "./l10n",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "shirokuma-library",
   "license": "MIT",
   "repository": {
@@ -240,6 +240,10 @@
               "sessionSuffix": {
                 "type": "string",
                 "description": "%config.profiles.sessionSuffix%"
+              },
+              "updateCommand": {
+                "type": "string",
+                "description": "%config.profiles.updateCommand%"
               }
             },
             "additionalProperties": false

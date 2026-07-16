@@ -22,8 +22,9 @@
   "config.notifyBridgeStatusline": "ベル通知に、そのセッションのコンテキスト使用率とコストを statusline ブリッジファイルから読み取って追記します。参考の `statusline.sh` (README 参照) が必要で、未設定のときは何も追記されません。既定で有効。",
   "config.terminal.fontFamily": "Tmux ターミナルビューのフォント。空にするとエディターのフォントを使います。",
   "config.terminal.fontSize": "Tmux ターミナルビューのフォントサイズ (px)。未設定ならエディターのフォントサイズに合わせます。",
-  "config.profiles": "Tmux ビューのツールバーで、`+` の隣の `⌄` から選べるコマンド。プロファイルは tmux セッションのプロセスそのものとして起動するので、終了するとセッションも終わります。\n\n組み込みプロファイル (`Claude Code`, `Codex`, `Gemini`, `Cursor`, `Grok`) にこの設定が上書きされます。キーに `null` を指定すると組み込みを非表示にでき、新しいキーを足せば独自のプロファイルを定義できます:\n\n```json\n\"tmuxOpener.profiles\": {\n  \"Gemini\": null,\n  \"Claude Code\": { \"command\": \"claude --continue\" },\n  \"Build\": { \"command\": \"npm run watch\", \"sessionSuffix\": \"build\" }\n}\n```",
+  "config.profiles": "Tmux ビューのツールバーで、`+` の隣の `⌄` から選べるコマンド。プロファイルは tmux セッションのプロセスそのものとして起動するので、終了するとセッションも終わります。\n\n組み込みプロファイル (`Claude Code`, `Codex`, `Gemini`, `Cursor`, `Grok`) にこの設定が上書きされます。キーに `null` を指定すると組み込みを非表示にでき、新しいキーを足せば独自のプロファイルを定義できます:\n\n```json\n\"tmuxOpener.profiles\": {\n  \"Gemini\": null,\n  \"Claude Code\": { \"command\": \"claude --continue\" },\n  \"Build\": { \"command\": \"npm run watch\", \"sessionSuffix\": \"build\" }\n}\n```\n\n組み込みプロファイルを上書きすると全フィールドが置き換わるので、一部だけ (例: `command` のみ) を上書きすると `updateCommand` などの既定値は保持されません。",
   "config.profiles.command": "セッションのプロセスとして実行するシェルコマンド (例: \"claude\")。",
   "config.profiles.description": "ピッカーでプロファイル名の横に表示する説明。省略するとコマンドを表示します。",
-  "config.profiles.sessionSuffix": "セッション名の接尾辞 (\"<ワークスペース>-<接尾辞>\" の形)。省略するとプロファイル名から生成します。"
+  "config.profiles.sessionSuffix": "セッション名の接尾辞 (\"<ワークスペース>-<接尾辞>\" の形)。省略するとプロファイル名から生成します。",
+  "config.profiles.updateCommand": "プロファイルのツールを更新するコマンド (例: \"claude update\")。設定すると、このプロファイルのセッションのツールバーに更新ボタンが表示されます。単一の自己更新コマンドを持たないツールでは省略してください。"
 }

@@ -16,6 +16,54 @@ export interface ProfileSuffixInput {
   sessionSuffix?: string;
 }
 
+/** Minimal profile shape `resolveToolActions` reads; `TmuxProfile` satisfies it. */
+export interface ToolActionsInput {
+  label: string;
+  command: string;
+  updateCommand?: string;
+}
+
+/**
+ * Which toolbar actions the attached session's launch command earns. Knowing
+ * the command at all (it matches a profile's `command`) is what enables
+ * `canRestart`; that profile also declaring an `updateCommand` is what enables
+ * `canUpdate`. `toolLabel` is only present when a profile matched, so a caller
+ * can `deepStrictEqual` the no-match result against `{canRestart, canUpdate}`.
+ */
+export interface ToolActions {
+  canRestart: boolean;
+  canUpdate: boolean;
+  toolLabel?: string;
+}
+
+/**
+ * Resolve the toolbar's tool actions for the currently attached session's
+ * launch `command` by matching it against the known `profiles`. Pure: no I/O,
+ * no VS Code API — the identification is a plain lookup so it can be unit-tested
+ * (#133). An unknown command, or `undefined` (a bare shell, or a session whose
+ * command was never recorded), earns nothing: both `canRestart` and `canUpdate`
+ * are false and no `toolLabel` is set — "shows nothing rather than something
+ * wrong". A matched profile earns `canRestart` (the command is known, so it can
+ * be respawned) and, only if it declares an `updateCommand`, `canUpdate`.
+ */
+export function resolveToolActions(
+  command: string | undefined,
+  profiles: ToolActionsInput[],
+): ToolActions {
+  if (command === undefined) {
+    return { canRestart: false, canUpdate: false };
+  }
+  const match = profiles.find((p) => p.command === command);
+  if (!match) {
+    return { canRestart: false, canUpdate: false };
+  }
+  return {
+    canRestart: true,
+    canUpdate: Boolean(match.updateCommand),
+    toolLabel: match.label,
+  };
+}
+
 /**
  * Separator between a base session name and any suffix (numeric extra, or a
  * profile slug). Doubled on purpose: `sanitizeSessionName` collapses every run
@@ -27,6 +75,24 @@ export interface ProfileSuffixInput {
  * `foo-2`. tmux accepts `--` in a session name (it only rewrites `:` and `.`).
  */
 export const SESSION_SEPARATOR = '--';
+
+/**
+ * Suffix of the ephemeral session that runs a tool's `updateCommand` (#135).
+ * Deliberately inside the base's `<base>--…` namespace: the `--` boundary makes
+ * it collision-safe (`sanitizeSessionName` collapses `--`, so no workspace base
+ * ever contains one), so `<base>--update` can never be mistaken for — or attach
+ * to — an unrelated `foo-update` workspace's own session, the way a bare
+ * `<base>-update` would. The price is that it reads as *related* to the base;
+ * the update flow tracks the name and excludes it from the sidebar list and the
+ * `attachNextAfter` fallback rather than pick a non-namespaced, collision-prone
+ * name (design #130 unresolved item (2)).
+ */
+export const UPDATE_SESSION_SUFFIX = 'update';
+
+/** The transient update session's name for `baseName`: `<base>--update`. */
+export function updateSessionName(baseName: string): string {
+  return `${baseName}${SESSION_SEPARATOR}${UPDATE_SESSION_SUFFIX}`;
+}
 
 /**
  * Base session name used when a workspace folder's name sanitizes to nothing

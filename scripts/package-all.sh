@@ -6,14 +6,24 @@
 # anything. Run it before tagging a release.
 #
 #   bash scripts/package-all.sh          # gate + 4 VSIXs into out/
-#   bash scripts/package-all.sh --no-x64 # skip the target that needs docker
+#   bash scripts/package-all.sh --no-x64 # skip the emulated foreign-arch target
+#
+# --no-x64 no longer means "skip the target that needs docker": docker is now a
+# hard requirement for *every* Linux build, host arch included (see below). What
+# it skips is only the foreign-arch VSIX, the one built under qemu emulation.
 #
 # Why the targets are not symmetric:
 #
 #   linux-*   node-pty ships no Linux prebuild, so `npm ci` compiles pty.node
-#             into build/Release for the host arch. The host's own arch is built
-#             natively; the other one is built inside a docker container of that
-#             platform (qemu). This is the one target that cannot be faked.
+#             into build/Release. Both Linux arches are now built the same way,
+#             inside a `node:20-bookworm` container via package_linux_in_docker,
+#             so pty.node links against bookworm's glibc (2.36) rather than this
+#             host's — i.e. docker is required for the host-arch build too, not
+#             just the foreign one. The host arch's container runs
+#             `--platform linux/<host>`, which matches the machine, so it is a
+#             *native* build with no qemu (docker without emulation); the foreign
+#             arch runs under qemu emulation. This is the one target that cannot
+#             be faked.
 #   darwin-*  node-pty ships macOS prebuilds, so both are cross-packaged here.
 #             build/Release ends up holding this host's ELF, which is harmless:
 #             lib/utils.js tries build/Release, fails to load it, and falls
@@ -39,6 +49,55 @@ case "$(uname -m)" in
 esac
 FOREIGN_ARCH=$([ "$HOST_ARCH" = arm64 ] && echo x64 || echo arm64)
 DOCKER_PLATFORM=$([ "$FOREIGN_ARCH" = x64 ] && echo linux/amd64 || echo linux/arm64)
+HOST_PLATFORM=$([ "$HOST_ARCH" = x64 ] && echo linux/amd64 || echo linux/arm64)
+
+# Build a linux-<arch> VSIX inside a node:20-bookworm container.
+#
+#   $1 arch      x64 | arm64 (the vsce --target suffix)
+#   $2 platform  the docker --platform (linux/amd64 | linux/arm64)
+#   $3 emulated  1 when $platform does not match the host arch (runs under qemu)
+#
+# The tree goes in over stdin rather than as a bind mount so the host's
+# node_modules (wrong arch) can never leak in; the container runs `npm ci`
+# against the same package-lock.json and compiles pty.node for its own arch,
+# against bookworm's glibc. It runs as the host user so out/*.vsix does not come
+# back owned by root. ./tmp is the sparse vscode clone kept for reference — big,
+# and not needed.
+#
+# GOMAXPROCS=1 (emulated path only): esbuild's Go binary crashes under
+# qemu user-mode emulation ("fatal error: lfstack.push", a goroutine
+# scheduler/GC worker panic) when it runs multi-threaded. This hits whichever
+# arch is the *emulated* one — qemu-x86_64 when the host is arm64, qemu-aarch64
+# when the host is x64 — since the bug is in qemu's atomics, not in any one
+# guest arch. Forcing the Go runtime single-threaded avoids it. A native build
+# (host arch, no qemu) is unaffected, so it runs esbuild multi-threaded and does
+# not pay that cost.
+package_linux_in_docker() {
+  local arch=$1 platform=$2 emulated=${3:-0}
+  echo
+  if [ "$emulated" = 1 ]; then
+    echo "==> packaging linux-$arch (docker, $platform, emulated)"
+  else
+    echo "==> packaging linux-$arch (docker, $platform, native)"
+  fi
+
+  local -a docker_env=(-e HOME=/tmp)
+  [ "$emulated" = 1 ] && docker_env+=(-e GOMAXPROCS=1)
+
+  tar -c --exclude=./node_modules --exclude=./out --exclude=./.git --exclude=./tmp -C "$ROOT" . |
+    docker run --rm -i \
+      --platform "$platform" \
+      -u "$(id -u):$(id -g)" \
+      "${docker_env[@]}" \
+      -v "$ROOT/out:/out" \
+      node:20-bookworm \
+      bash -euo pipefail -c '
+        mkdir -p /tmp/build && tar -x -C /tmp/build && cd /tmp/build
+        npm ci --no-audit --no-fund
+        node -e "require(\"node-pty\")"
+        npx vsce package --dependencies --target '"linux-$arch"' --out /out/
+      '
+}
 
 echo "==> gate (the checks CI used to run)"
 npm run check-types
@@ -55,43 +114,24 @@ echo "==> restoring the executable bit on spawn-helper"
 chmod +x node_modules/node-pty/prebuilds/darwin-x64/spawn-helper
 chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
 
-for target in "linux-$HOST_ARCH" darwin-x64 darwin-arm64; do
+# darwin uses node-pty's macOS prebuilds and links against no host glibc, so it
+# is packaged directly on this host. linux-<host-arch> is the machine's own
+# shipping VSIX, but it too goes through a bookworm container (native, no qemu)
+# so its pty.node links against glibc 2.36 rather than this host's newer one —
+# it is a primary artifact and is never skipped by --no-x64.
+for target in darwin-x64 darwin-arm64; do
   echo
   echo "==> packaging $target (native host)"
   npx vsce package --dependencies --target "$target" --out out/
 done
 
+package_linux_in_docker "$HOST_ARCH" "$HOST_PLATFORM"
+
 if [ "$SKIP_X64" = 1 ]; then
   echo
   echo "!!! skipping linux-$FOREIGN_ARCH — that VSIX will be missing from the release"
 else
-  echo
-  echo "==> packaging linux-$FOREIGN_ARCH (docker, $DOCKER_PLATFORM)"
-  # The tree goes in over stdin rather than as a bind mount so the host's
-  # node_modules (wrong arch) can never leak in; the container runs `npm ci`
-  # against the same package-lock.json and compiles pty.node for its own arch.
-  # It runs as the host user so out/*.vsix does not come back owned by root.
-  # ./tmp is the sparse vscode clone kept for reference — big, and not needed.
-  #
-  # GOMAXPROCS=1: esbuild's Go binary crashes under qemu-x86_64 user-mode
-  # emulation on an arm64 host ("fatal error: lfstack.push", a goroutine
-  # scheduler/GC worker panic) when it runs multi-threaded. Forcing the Go
-  # runtime single-threaded avoids the qemu atomics bug that triggers it.
-  # Native amd64 hosts are unaffected; this only matters under emulation.
-  tar -c --exclude=./node_modules --exclude=./out --exclude=./.git --exclude=./tmp -C "$ROOT" . |
-    docker run --rm -i \
-      --platform "$DOCKER_PLATFORM" \
-      -u "$(id -u):$(id -g)" \
-      -e HOME=/tmp \
-      -e GOMAXPROCS=1 \
-      -v "$ROOT/out:/out" \
-      node:20-bookworm \
-      bash -euo pipefail -c '
-        mkdir -p /tmp/build && tar -x -C /tmp/build && cd /tmp/build
-        npm ci --no-audit --no-fund
-        node -e "require(\"node-pty\")"
-        npx vsce package --dependencies --target '"linux-$FOREIGN_ARCH"' --out /out/
-      '
+  package_linux_in_docker "$FOREIGN_ARCH" "$DOCKER_PLATFORM" 1
 fi
 
 echo

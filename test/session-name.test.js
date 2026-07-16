@@ -13,7 +13,16 @@ const {
   isRelatedSession,
   nextSessionName,
   profileSuffix,
+  resolveToolActions,
+  updateSessionName,
 } = require('../src/session-name.ts');
+
+/** Profiles shaped like `DEFAULT_PROFILES` resolved to `TmuxProfile` objects. */
+const toolProfiles = [
+  { label: 'Claude Code', command: 'claude', updateCommand: 'claude update' },
+  { label: 'Gemini', command: 'gemini' }, // no updateCommand — update stays off
+  { label: 'Grok', command: 'grok', updateCommand: 'grok update' },
+];
 
 /** Terse `TmuxSession` factory — only `name` matters to the functions here. */
 const s = (name) => ({ name, windows: 1, attached: false });
@@ -123,4 +132,50 @@ test('profileSuffix prefers an explicit sessionSuffix and cleans it', () => {
 test('profileSuffix falls back to "profile" when nothing usable remains', () => {
   assert.strictEqual(profileSuffix({ label: '!!!' }), 'profile');
   assert.strictEqual(profileSuffix({ label: 'X', sessionSuffix: '   ' }), 'x');
+});
+
+test('resolveToolActions enables restart and update for a profile with an updateCommand', () => {
+  assert.deepStrictEqual(resolveToolActions('claude', toolProfiles), {
+    canRestart: true,
+    canUpdate: true,
+    toolLabel: 'Claude Code',
+  });
+});
+
+test('resolveToolActions enables restart but not update when the profile has no updateCommand', () => {
+  assert.deepStrictEqual(resolveToolActions('gemini', toolProfiles), {
+    canRestart: true,
+    canUpdate: false,
+    toolLabel: 'Gemini',
+  });
+});
+
+test('resolveToolActions returns all-false with no toolLabel for an unknown command', () => {
+  // A bare shell (or any command that matches no profile) earns nothing, and
+  // the object carries no toolLabel key — "shows nothing rather than wrong".
+  assert.deepStrictEqual(resolveToolActions('bash', toolProfiles), {
+    canRestart: false,
+    canUpdate: false,
+  });
+});
+
+test('resolveToolActions returns all-false for an undefined command', () => {
+  // A session whose command was never recorded (e.g. not yet restored) must not
+  // claim any tool identity.
+  assert.deepStrictEqual(resolveToolActions(undefined, toolProfiles), {
+    canRestart: false,
+    canUpdate: false,
+  });
+});
+
+test('updateSessionName namespaces the transient update session under the base', () => {
+  assert.strictEqual(updateSessionName('foo'), 'foo--update');
+});
+
+test('updateSessionName stays inside the base "--" namespace (collision-safe)', () => {
+  // The transient session shares the base's "--" namespace so it can never be
+  // mistaken for an unrelated workspace's session — unlike a bare "foo-update",
+  // which would BE the base of a "foo-update" workspace and could attach to it.
+  assert.ok(isRelatedSession('foo', updateSessionName('foo')));
+  assert.ok(!isRelatedSession('foo-update', updateSessionName('foo')));
 });
