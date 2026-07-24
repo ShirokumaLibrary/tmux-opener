@@ -6,6 +6,11 @@
   "publisher": "shirokuma-library",
   "license": "OFL-1.1",
   "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShirokumaLibrary/tmux-opener.git",
+    "directory": "font-packages/font-mplus1code"
+  },
   "engines": {
     "vscode": "^1.94.0"
   },
