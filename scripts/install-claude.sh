@@ -142,7 +142,7 @@ reject_unsafe_rel() { # reject_unsafe_rel <rel>
 # --- remote source: fetch layer (borrowed from install-cli.sh; only this layer)-
 # When source_spec is gh:/http(s), fetch each *.sh into a staging dir and make
 # that dir the install source; a local path is used in place. Either way the
-# scripts keep their relative layout (statusline.sh at the root, hooks/*.sh under
+# scripts keep their relative layout (tmux-opener-statusline.sh at the root, hooks/*.sh under
 # hooks/), so the gate<->bell adjacency invariant holds exactly as from a clone.
 is_gh()  { case "$1" in gh:*) return 0 ;; *) return 1 ;; esac; }
 # https only: a non-TLS http:// source can be rewritten in flight by a man in the
@@ -336,13 +336,18 @@ fi
 blocked=0
 
 # --- (4) legacy flat layout: stop, don't warn-and-continue ---------------------
-# The old README told users to drop all four scripts directly in ~/.claude. If we
-# installed over that, statusline.sh (same path in both layouts) would be
-# overwritten with the new version while the three hooks would be *created* in
-# ~/.claude/hooks/ — and settings.json would still point at the stale flat copies.
-# The result is a split install: new statusline reading the marker set an old gate
-# writes. That is a silent, version-skewed wrong answer, so it must not happen by
-# default. Refuse, explain, and let --force override deliberately.
+# The old README told users to drop all four scripts directly in ~/.claude (a flat
+# layout, hooks alongside the statusline). This fires on the presence of any of
+# those flat-root *hook* files (session-state.sh / subagent-idle-gate.sh /
+# tmux-opener-bell.sh at $dest, not under hooks/): their presence marks an old
+# install whose settings.json still points at the flat copies. Since #166 the
+# installer writes prefixed names (tmux-opener-statusline.sh, hooks/tmux-opener-*.sh),
+# so a fresh install no longer overwrites the old statusline.sh at all — it lands
+# the new prefixed layout beside the stale flat copies while settings.json keeps
+# aiming at the old ones. The result is a split, version-skewed install: the hooks
+# settings.json references stay the pre-rename copies, and a new gate and the old
+# flat gate key their markers differently. That is a silent wrong answer, so it must
+# not happen by default. Refuse, explain, and let --force override deliberately.
 legacy=()
 for name in session-state.sh subagent-idle-gate.sh tmux-opener-bell.sh; do
   { [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; } && legacy+=("$name")
@@ -353,15 +358,17 @@ if [ "${#legacy[@]}" -gt 0 ]; then
   say "WARNING: a legacy flat layout was found in $dest:"
   for name in "${legacy[@]}"; do say "  $dest/$name"; done
   say ""
-  say "Installing on top of it would upgrade statusline.sh but leave settings.json"
-  say "pointing at these old hook copies — a split install where a new statusline"
-  say "reads the markers an old gate writes. Migrate in this order:"
+  say "Installing on top of it lands the new prefixed layout beside these old flat"
+  say "copies while settings.json keeps pointing at the old ones — a split,"
+  say "version-skewed install where the wired-up scripts stay the pre-rename copies."
+  say "Migrate in this order:"
   say ""
   say "  1. Install first, so the new layout exists before anything points at it:"
   say "       npm run claude:install -- --force"
-  say "  2. Point the hooks in $dest/settings.json at the hooks/ layout:"
-  say "       ~/.claude/session-state.sh       ->  ~/.claude/hooks/session-state.sh"
-  say "       ~/.claude/subagent-idle-gate.sh  ->  ~/.claude/hooks/subagent-idle-gate.sh"
+  say "  2. Point settings.json at the new prefixed layout (#166 renamed each script):"
+  say "       ~/.claude/statusline.sh          ->  ~/.claude/tmux-opener-statusline.sh"
+  say "       ~/.claude/session-state.sh       ->  ~/.claude/hooks/tmux-opener-session-state.sh"
+  say "       ~/.claude/subagent-idle-gate.sh  ->  ~/.claude/hooks/tmux-opener-subagent-idle-gate.sh"
   say "       ~/.claude/tmux-opener-bell.sh    ->  ~/.claude/hooks/tmux-opener-bell.sh"
   say "  3. Delete the old flat copies:"
   for name in "${legacy[@]}"; do say "       rm $dest/$name"; done
@@ -372,7 +379,7 @@ if [ "${#legacy[@]}" -gt 0 ]; then
 fi
 
 # --- (5) symlinked destinations: refuse, because the backup cannot be honest ---
-# A destination that is a symlink (a dotfiles repo managing ~/.claude/statusline.sh
+# A destination that is a symlink (a dotfiles repo managing ~/.claude/tmux-opener-statusline.sh
 # is a perfectly legitimate reason for one) breaks the backup contract in both
 # directions:
 #   * `cp -a` copies the *link*, not the file it points at, so the backup preserves
@@ -608,6 +615,31 @@ else
   say ""
 fi
 
+# --- pre-prefix residue: advise, never touch (ADR #166, migration case b) ------
+# The three scripts below were renamed to a tmux-opener- prefix so a shared
+# ~/.claude cannot collide with another tool's generically named statusline.sh /
+# session-state.sh (single statusLine slot; #166). Migration is non-destructive:
+# this installer writes ONLY the new names and never deletes, renames, or rewires
+# the old ones — a settings.json still pointing at them keeps working untouched.
+# We only *read* here (existence checks), so a user who already had the old names
+# is told what changed and left to repoint settings.json by hand when they choose.
+old_residue=()
+for oldrel in statusline.sh hooks/session-state.sh hooks/subagent-idle-gate.sh; do
+  [ -e "$dest/$oldrel" ] && old_residue+=("$oldrel")
+done
+if [ "${#old_residue[@]}" -gt 0 ]; then
+  say "Note: pre-prefix script names are still present in $dest (ADR #166):"
+  for oldrel in "${old_residue[@]}"; do say "  $dest/$oldrel"; done
+  say ""
+  say "They were left untouched — nothing was deleted or rewired. The prefixed"
+  say "copies were just installed alongside them. When you're ready, repoint"
+  say "$dest/settings.json at the new names below and delete the old files yourself:"
+  say "  statusline.sh               ->  tmux-opener-statusline.sh"
+  say "  hooks/session-state.sh      ->  hooks/tmux-opener-session-state.sh"
+  say "  hooks/subagent-idle-gate.sh ->  hooks/tmux-opener-subagent-idle-gate.sh"
+  say ""
+fi
+
 # --- (3) settings.json: print, never write -------------------------------------
 say "$dest/settings.json is NOT modified by this installer. If you haven't wired"
 say "these scripts up yet, paste the parts you want (all of it is opt-in):"
@@ -615,29 +647,29 @@ cat <<'SNIPPET'
 
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/statusline.sh",
+    "command": "~/.claude/tmux-opener-statusline.sh",
     "refreshInterval": 1
   },
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/session-state.sh running" } ] },
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh reset" } ] }
+      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-session-state.sh running" } ] },
+      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh reset" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/session-state.sh stopped" } ] },
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh main-stop" } ] }
+      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-session-state.sh stopped" } ] },
+      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh main-stop" } ] }
     ],
     "PreToolUse": [
       {
         "matcher": "Agent",
-        "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh pending" } ]
+        "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh pending" } ]
       }
     ],
     "SubagentStart": [
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh start" } ] }
+      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh start" } ] }
     ],
     "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh stop" } ] }
+      { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh stop" } ] }
     ],
     "Notification": [
       {
@@ -648,8 +680,8 @@ cat <<'SNIPPET'
   }
 
 SNIPPET
-say "With the gate wired as above, Stop must call subagent-idle-gate.sh main-stop"
-say "and NOT tmux-opener-bell.sh stop — the gate rings the bell itself, once the"
+say "With the gate wired as above, Stop must call tmux-opener-subagent-idle-gate.sh"
+say "main-stop and NOT tmux-opener-bell.sh stop — the gate rings the bell itself, once the"
 say "session is truly idle. Requires jq on your PATH."
 say ""
 say "The Notification matcher is load-bearing, and so is what it leaves out (#108):"
@@ -658,7 +690,7 @@ say "auth_success, an MCP elicitation_complete and an agent_completed each rang 
 say "\"waiting for your input\" bell. The three above are the ones that actually wait"
 say "on a human. Do NOT add idle_prompt (or agent_completed) to it, tempting as it"
 say "looks: that is the session going idle, and the idle bell already has exactly"
-say "one owner — Stop -> subagent-idle-gate.sh main-stop, which holds it back while"
+say "one owner — Stop -> tmux-opener-subagent-idle-gate.sh main-stop, which holds it back while"
 say "a subagent is still running. A second, ungated bell for the same event is #75"
 say "all over again."
 say ""

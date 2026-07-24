@@ -247,33 +247,39 @@ export function decideNotifySoundToggle(current: boolean): {
   return { next, playConfirmation: next };
 }
 
-/** Which configuration scope a toolbar toggle writes back to (#127). */
-export type NotifySoundToggleScope = 'workspaceFolder' | 'workspace' | 'global';
+/** Which configuration scope a write-back must target (#127, generalized #208). */
+export type ConfigWriteScope = 'workspaceFolder' | 'workspace' | 'global';
 
 /**
- * Which scope a toolbar toggle of `tmuxOpener.notifySound` must write to for the
- * flip to actually change the *effective* value (#127). The toolbar reads the
- * effective value (workspace/folder overrides included) and negates it, so it has
- * to write the negation to whichever scope currently *wins* — the highest-priority
- * scope that already has a value set — falling back to Global when only the
- * default applies. Writing to Global while a workspace/folder override stands
- * would leave the effective value unchanged: `onDidChangeConfiguration` never
- * fires, the button never echoes, and the toggle is a stuck no-op (the exact
- * failure a `.vscode/settings.json` "tmuxOpener.notifySound": false reproduces).
- * VS Code resolves in the order folder > workspace > global > default, so the
- * winning scope is the first defined one in that order. Pure over the `inspect()`
- * shape so the rule is testable without the VS Code API; the caller maps the
- * token to a `ConfigurationTarget`.
+ * Which scope a settings write-back must target for it to actually change the
+ * *effective* value (#127; generalized over the value type in #208, plan #207
+ * task 2). A UI that reads the effective value (workspace/folder overrides
+ * included) and writes a new one has to write to whichever scope currently
+ * *wins* — the highest-priority scope that already has a value set — falling back
+ * to Global when only the default applies. Writing to Global while a
+ * workspace/folder override stands would leave the effective value unchanged:
+ * `onDidChangeConfiguration` never fires, the UI never echoes, and the write is a
+ * stuck no-op (the exact failure a `.vscode/settings.json` "tmuxOpener.notifySound":
+ * false reproduced). VS Code resolves in the order folder > workspace > global >
+ * default, so the winning scope is the first defined one in that order.
+ *
+ * The rule keys off which tier is *set* (`!== undefined`), never the value's
+ * type, so it is value-type-agnostic: the `notifySound` toggle drives it with a
+ * `boolean`, and font-family (`string`) / font-size (`number`) persistence (#209)
+ * reuse it unchanged. `!== undefined` treats a defined-but-falsy override (`false`,
+ * `''`, `0`) as set — it wins its scope rather than falling through to Global.
+ * Pure over the `inspect()` shape so the rule is testable without the VS Code
+ * API; the caller maps the token to a `ConfigurationTarget`.
  */
-export function resolveNotifySoundToggleScope(
+export function resolveConfigWriteScope<T>(
   inspect:
     | {
-        globalValue?: boolean;
-        workspaceValue?: boolean;
-        workspaceFolderValue?: boolean;
+        globalValue?: T;
+        workspaceValue?: T;
+        workspaceFolderValue?: T;
       }
     | undefined,
-): NotifySoundToggleScope {
+): ConfigWriteScope {
   if (inspect?.workspaceFolderValue !== undefined) {
     return 'workspaceFolder';
   }

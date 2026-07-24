@@ -100,7 +100,7 @@ BEL, and your pick decides what `preferredNotifChannel` must be in
 | --- | --- | --- |
 | **A. No scripts** (the default) | Claude Code itself | `"terminal_bell"` — **required**; nothing else would ring |
 | **B. Bell-reason sound** (a distinct sound for "waiting for input") | `tmux-opener-bell.sh`, from the `Stop` and `Notification` hooks | a **non-bell** channel, e.g. `"notifications_disabled"` |
-| **C. Subagent-aware idle gate** (ring only on *true* idle) | `subagent-idle-gate.sh` → `tmux-opener-bell.sh` | a **non-bell** channel, e.g. `"notifications_disabled"` |
+| **C. Subagent-aware idle gate** (ring only on *true* idle) | `tmux-opener-subagent-idle-gate.sh` → `tmux-opener-bell.sh` | a **non-bell** channel, e.g. `"notifications_disabled"` |
 
 C builds on B: it keeps B's `Notification` → ask wiring and routes only the
 *completion* bell through the gate, so B and C stack. **A does not stack with
@@ -168,10 +168,10 @@ that live in [`claude/`](claude/) and install into `~/.claude`, mirroring
 that directory one-for-one:
 
 ```
-claude/statusline.sh                ->  ~/.claude/statusline.sh
-claude/hooks/session-state.sh       ->  ~/.claude/hooks/session-state.sh
-claude/hooks/subagent-idle-gate.sh  ->  ~/.claude/hooks/subagent-idle-gate.sh
-claude/hooks/tmux-opener-bell.sh    ->  ~/.claude/hooks/tmux-opener-bell.sh
+claude/tmux-opener-statusline.sh                ->  ~/.claude/tmux-opener-statusline.sh
+claude/hooks/tmux-opener-session-state.sh       ->  ~/.claude/hooks/tmux-opener-session-state.sh
+claude/hooks/tmux-opener-subagent-idle-gate.sh  ->  ~/.claude/hooks/tmux-opener-subagent-idle-gate.sh
+claude/hooks/tmux-opener-bell.sh                ->  ~/.claude/hooks/tmux-opener-bell.sh
 ```
 
 **Prefer to hand this to an AI coding agent?** Paste this prompt (it covers
@@ -194,7 +194,7 @@ They all need `jq` on your `PATH`. They're all optional, but not all
 
 - The **statusline bridge** is a true extra — it rings no bell, it just adds
   context% and cost to the notification — so it stacks with any setup above.
-- The two **bell hooks** (`tmux-opener-bell.sh`, `subagent-idle-gate.sh`) take
+- The two **bell hooks** (`tmux-opener-bell.sh`, `tmux-opener-subagent-idle-gate.sh`) take
   over as the source of the BEL. That's why setups B and C require Claude
   Code's own `terminal_bell` to be switched off.
 
@@ -259,7 +259,7 @@ and what it has cost so far** — e.g. `Session "myproject" needs attention.
 
 The extension can't see Claude Code's internal JSON, but your statusline
 script can, since Claude Code sends it that JSON on stdin. A reference
-`statusline.sh` writes a small excerpt to
+`tmux-opener-statusline.sh` writes a small excerpt to
 `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/status-<session>.json`, and the
 extension reads it — if it's fresh (within 30s) — when a bell fires. It's
 entirely opt-in: with no script installed, nothing changes.
@@ -277,7 +277,7 @@ To enable it, install the scripts (above) and register the statusline in
 `~/.claude/settings.json`:
 
 ```json
-"statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
+"statusLine": { "type": "command", "command": "~/.claude/tmux-opener-statusline.sh" }
 ```
 
 **Working / idle indicator.** The statusline also renders a spinner
@@ -291,7 +291,7 @@ done.
   wedged hook, which leaves `running` on disk while the statusline keeps
   spinning right through it.
 - That state can't be derived from the statusline's own stdin, so it comes
-  from a second script, [`claude/hooks/session-state.sh`](claude/hooks/session-state.sh),
+  from a second script, [`claude/hooks/tmux-opener-session-state.sh`](claude/hooks/tmux-opener-session-state.sh),
   driven by two hooks. It's optional — without it the indicator stays a
   neutral `○`, and everything else on the statusline still works.
 - The indicator keeps spinning while a subagent is still running, even after
@@ -305,15 +305,15 @@ To enable it, register the hooks — and `refreshInterval` — in
 ```json
 "statusLine": {
   "type": "command",
-  "command": "~/.claude/statusline.sh",
+  "command": "~/.claude/tmux-opener-statusline.sh",
   "refreshInterval": 1
 },
 "hooks": {
   "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/session-state.sh running" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-session-state.sh running" } ] }
   ],
   "Stop": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/session-state.sh stopped" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-session-state.sh stopped" } ] }
   ]
 }
 ```
@@ -443,7 +443,7 @@ permission prompt, an agent asking for input, an elicitation dialog.
 
 **Don't add the completion or idle types to it either** (`agent_completed`,
 `elicitation_complete`, `idle_prompt`). The completion bell already has exactly
-one owner — the `Stop` hook, or `subagent-idle-gate.sh main-stop` once you add
+one owner — the `Stop` hook, or `tmux-opener-subagent-idle-gate.sh main-stop` once you add
 the gate below — and a second source for it is how the premature bell the gate
 exists to prevent comes back.
 
@@ -462,7 +462,7 @@ gate can hold the notification back until the main turn has stopped **and**
 every subagent has finished, so the bell means "actually done," not "the
 coordinator paused."
 
-The reference `subagent-idle-gate.sh` tracks running subagents as marker
+The reference `tmux-opener-subagent-idle-gate.sh` tracks running subagents as marker
 files under `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/subagents-<session>/`
 (one file per subagent, keyed by Claude Code's `session_id`), and fires only
 once that set is empty:
@@ -518,7 +518,7 @@ completion-vs-ask window — so concurrent `main-stop` events never
 double-notify. This is why both scripts must sit in `~/.claude/hooks/`: the
 gate resolves the bell relative to itself, with no configured path.
 
-The reference `statusline.sh` reads the same marker set: while any subagent
+The reference `tmux-opener-statusline.sh` reads the same marker set: while any subagent
 is still running, it keeps showing `working` rather than `idle`, so it
 never reads as done while the gate is still holding the bell back. It shows
 no count — Claude Code already reports the subagents it launched.
@@ -535,22 +535,22 @@ instead of the bell directly and add the `PreToolUse` / `SubagentStart` /
 ```json
 "hooks": {
   "Stop": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh main-stop" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh main-stop" } ] }
   ],
   "PreToolUse": [
     {
       "matcher": "Agent",
-      "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh pending" } ]
+      "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh pending" } ]
     }
   ],
   "SubagentStart": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh start" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh start" } ] }
   ],
   "SubagentStop": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh stop" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh stop" } ] }
   ],
   "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh reset" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh reset" } ] }
   ],
   "Notification": [
     {
@@ -571,7 +571,7 @@ what keeps that hook from firing on the completion and idle types the gate owns.
 **Route every BEL through the gate — don't let a second source bypass it.**
 This is setup C, and it has two sources to shut off, not one:
 
-- The `Stop` hook must call `subagent-idle-gate.sh main-stop`, **not**
+- The `Stop` hook must call `tmux-opener-subagent-idle-gate.sh main-stop`, **not**
   `tmux-opener-bell.sh stop`. The two are mutually exclusive: keeping the direct
   wiring from setup B alongside the gate would ring on every main-turn stop and
   defeat the whole point. The gate calls `tmux-opener-bell.sh stop` itself, once
@@ -593,7 +593,7 @@ This is setup C, and it has two sources to shut off, not one:
 | `tmuxOpener.notifyToast` | Show the pop-up notification (toast). On by default; turn off to keep only the sound. Set `notifyOnBell` to false to silence both. |
 | `tmuxOpener.notifySoundPreset` | Which sound to play: `classic`, `siren`, `sos`, `cascade` or `trill`. |
 | `tmuxOpener.notifySoundPresetOnAsk` | Sound to play when the bell is an "ask" (waiting for input) rather than a completed turn. Defaults to `siren`; needs the reference `tmux-opener-bell.sh` hook. |
-| `tmuxOpener.notifyBridgeStatusline` | Append context % and cost from the statusline bridge to the notification. On by default; needs the reference `statusline.sh`. |
+| `tmuxOpener.notifyBridgeStatusline` | Append context % and cost from the statusline bridge to the notification. On by default; needs the reference `tmux-opener-statusline.sh`. |
 
 ## Contributing
 

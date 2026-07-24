@@ -1,4 +1,4 @@
-// Behavioral tests for claude/statusline.sh — subagent accounting (Issue #89) and
+// Behavioral tests for claude/tmux-opener-statusline.sh — subagent accounting (Issue #89) and
 // the display layer (Issue #92: bar glyphs, working spinner, branch status,
 // elapsed units, and the segments that were removed).
 //
@@ -38,7 +38,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const STATUSLINE = path.join(__dirname, '..', 'claude', 'statusline.sh');
+const STATUSLINE = path.join(__dirname, '..', 'claude', 'tmux-opener-statusline.sh');
 const SID = 'e5f8a1c2-0000-4000-8000-000000000089';
 const SAFE_SID = SID; // the tr -c 'A-Za-z0-9_-' '_' mapping is the identity for a UUID
 
@@ -130,7 +130,7 @@ function runStatusline(root, { binDir, json = {}, cwd = root, env: extraEnv = {}
   return raw ? out : stripAnsi(out);
 }
 
-describe('claude/statusline.sh subagent accounting', { skip: hasJq ? false : 'jq not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh subagent accounting', { skip: hasJq ? false : 'jq not installed' }, () => {
   // @testdoc An empty marker set on a stopped main turn is the idle case: the
   // indicator reads idle, which is exactly when the gate fires the bell.
   test('no markers: idle', () => {
@@ -213,7 +213,7 @@ describe('claude/statusline.sh subagent accounting', { skip: hasJq ? false : 'jq
   });
 });
 
-describe('claude/statusline.sh working spinner', { skip: hasJq ? false : 'jq not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh working spinner', { skip: hasJq ? false : 'jq not installed' }, () => {
   // @testdoc The spinner is gated on real hook state, not on the clock: it turns
   // *while running*, and a stopped session with no subagents shows none of the
   // frames at all. That gating is the whole reason it means anything (#92 A-3).
@@ -253,7 +253,7 @@ describe('claude/statusline.sh working spinner', { skip: hasJq ? false : 'jq not
 // background is CLOSED at the end of the bar. A leaked background does not fail
 // quietly; it paints the rest of the line.
 const BAR_CELLS = '[█▏▎▍▌▋▊▉ ]{10}'; // the ten cells, whatever they are on the day
-describe('claude/statusline.sh bars', { skip: hasJq ? false : 'jq not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh bars', { skip: hasJq ? false : 'jq not installed' }, () => {
   // @testdoc The context bar draws in block glyphs, not ASCII. Safe because the
   // sanitizer strips only C0 controls (bytes >= 0x80 pass through) and the bar is
   // internally generated anyway — it never crosses the sanitize path (#92 A-1).
@@ -401,7 +401,7 @@ describe('claude/statusline.sh bars', { skip: hasJq ? false : 'jq not installed'
   });
 });
 
-describe('claude/statusline.sh elapsed time', { skip: hasJq ? false : 'jq not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh elapsed time', { skip: hasJq ? false : 'jq not installed' }, () => {
   // @testdoc Elapsed time switches unit with magnitude — a long session used to
   // read `⏰ 7384s`, which nobody converts in their head (#92 B-4).
   //
@@ -429,7 +429,7 @@ describe('claude/statusline.sh elapsed time', { skip: hasJq ? false : 'jq not in
   }
 });
 
-describe('claude/statusline.sh removed segments', { skip: hasJq ? false : 'jq not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh removed segments', { skip: hasJq ? false : 'jq not installed' }, () => {
   // @testdoc `exceeds_200k_tokens` said nothing the context bar doesn't already
   // say, and the PR is already visible elsewhere. Both are gone — including their
   // reads — so neither renders even when the schema reports them (#92 B-1 / B-2).
@@ -448,7 +448,7 @@ describe('claude/statusline.sh removed segments', { skip: hasJq ? false : 'jq no
   });
 });
 
-describe('claude/statusline.sh line-end clear (#100)', { skip: hasJq ? false : 'jq not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh line-end clear (#100)', { skip: hasJq ? false : 'jq not installed' }, () => {
   // Erase-to-end-of-line control. `[` opens a char class in a RegExp, so it is
   // escaped when a pattern is needed; `endsWith`/`split` take it as a plain string.
   const CLEAR = `${ESC}[K`;
@@ -562,7 +562,7 @@ function makeRepo(root) {
   };
 }
 
-describe('claude/statusline.sh branch status', { skip: hasJq && hasGit ? false : 'jq or git not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh branch status', { skip: hasJq && hasGit ? false : 'jq or git not installed' }, () => {
   // @testdoc A clean branch level with its upstream shows the name alone — no
   // markers invented for "nothing to report" (the show-nothing-rather-than-
   // something-wrong rule applies to the git segment too).
@@ -686,7 +686,7 @@ describe('claude/statusline.sh branch status', { skip: hasJq && hasGit ? false :
 //   `? ` untracked                             -> …
 // The old `?*) dirty=1` catch-all ("any line that isn't a header means dirty")
 // could not tell them apart, which is why it had to go.
-describe('claude/statusline.sh untracked files', { skip: hasJq && hasGit ? false : 'jq or git not installed' }, () => {
+describe('claude/tmux-opener-statusline.sh untracked files', { skip: hasJq && hasGit ? false : 'jq or git not installed' }, () => {
   // @testdoc Untracked files alone: the … marker, and NOT ✚. Under the old
   // --untracked-files=no this worktree read as fully clean (no marker at all), so
   // this is the behavior change the switch to =normal buys.
@@ -850,7 +850,7 @@ describe('claude/statusline.sh untracked files', { skip: hasJq && hasGit ? false
 // invariant comment names them as `U+FE0F`/`U+200D` rather than pasting the glyphs.
 // It cannot observe the on-screen render (the Bash/test tty limit in CLAUDE.md's
 // "Verifying the bell"); it enforces the property that makes the render predictable.
-describe('claude/statusline.sh emoji width', () => {
+describe('claude/tmux-opener-statusline.sh emoji width', () => {
   const source = fs.readFileSync(STATUSLINE, 'utf8');
 
   // @testdoc No VS16 (U+FE0F) anywhere in the script: a `<base>+VS16` marker has no

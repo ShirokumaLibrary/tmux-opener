@@ -1,0 +1,24 @@
+{
+  "name": "font-mplus1code",
+  "displayName": "M PLUS 1 Code (font resource for extensions)",
+  "description": "Supplies the M PLUS 1 Code font to extensions that borrow a bundled monospace face. It is a resource for extension developers, not a font selectable from ordinary settings such as editor.fontFamily.",
+  "version": "0.0.1",
+  "publisher": "shirokuma-library",
+  "license": "OFL-1.1",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {},
+  "providedFont": {
+    "family": "M PLUS 1 Code",
+    "file": "fonts/MPLUS1Code.ttf",
+    "weight": "100 700",
+    "license": "OFL-1.1"
+  }
+}

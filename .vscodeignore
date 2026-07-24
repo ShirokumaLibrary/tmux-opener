@@ -17,9 +17,9 @@ out/**
 **/.git/**
 tmp/**
 # Dev-only: the node --test suite. The webview modules it exercises
-# (media/webview-keymap.js, media/webview-sound.js) are NOT dev-only — media/**
-# is not excluded here, so they ship, which is what the webview's <script> tags
-# need.
+# (media/webview-keymap.js, media/webview-sound.js, media/webview-font.js) are
+# NOT dev-only — media/** is not excluded here, so they ship, which is what the
+# webview's <script> tags need.
 test/**
 # Dev-only: the reference scripts installed into ~/.claude (statusline, hooks).
 # Users get them from the repo — `npm run claude:install`, or the links in the
@@ -37,6 +37,12 @@ claude/**
 .shirokuma/**
 # Dev-only: local nginx preview for the .shirokuma/pages confirmation-view submodule.
 infra/**
+# The sibling font extensions (each its own VSIX, e.g. font-mplus1code)
+# live here as source; they are packaged separately, never bundled into this
+# extension's VSIX. Their bundled .ttf alone is ~3.9MB per package. This exclude
+# is name-based, so scripts/verify-vsix.js asserts the absence of
+# `extension/font-packages/` to fail the release gate if the tree is ever renamed.
+font-packages/**
 # Nothing lives here today (the release workflow was removed with GitHub Actions),
 # but repository metadata never belongs inside a VSIX. Kept so re-adding an issue
 # template or a workflow can't leak into the package.

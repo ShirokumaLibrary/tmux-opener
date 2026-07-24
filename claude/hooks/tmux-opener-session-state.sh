@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Records whether Claude Code is currently generating a response, keyed by
 # session_id. Driven by two hooks:
-#   UserPromptSubmit -> session-state.sh running
-#   Stop             -> session-state.sh stopped
-# statusline.sh reads the resulting file to show a real running/stopped
+#   UserPromptSubmit -> tmux-opener-session-state.sh running
+#   Stop             -> tmux-opener-session-state.sh stopped
+# tmux-opener-statusline.sh reads the resulting file to show a real running/stopped
 # indicator (unlike a wall-clock spinner, which just shows the statusline
 # subsystem is alive, not that Claude itself is actively working).
 #
 # NOTE: this script used to also emit a BEL to the pane tty on "stopped"
-# (every turn end). That is now owned by subagent-idle-gate.sh, which defers
+# (every turn end). That is now owned by tmux-opener-subagent-idle-gate.sh, which defers
 # the bell until true idle (main stopped AND all subagents finished) and
 # delegates the emission to tmux-opener-bell.sh. Ringing here too would bypass
 # that gate and notify prematurely while subagents still run, so this script
@@ -26,8 +26,8 @@ session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || 
 [ -z "$session_id" ] && exit 0
 
 # The session id becomes a file name, so it is reduced to a safe character set
-# first — the same `tr -c 'A-Za-z0-9_-' '_'` mapping subagent-idle-gate.sh uses
-# for its marker dir and statusline.sh uses to read this file back. `.` maps to
+# first — the same `tr -c 'A-Za-z0-9_-' '_'` mapping tmux-opener-subagent-idle-gate.sh uses
+# for its marker dir and tmux-opener-statusline.sh uses to read this file back. `.` maps to
 # `_` as well, so no value can walk out of $dir with `..`. The three must agree
 # byte for byte (the reader would otherwise look for a name nobody writes), so
 # they are only ever changed together. For a real session id (a CLI-generated

@@ -6,7 +6,7 @@
 # enumerate the *.sh files live, so they never read this file — but the clone
 # install warns if this list drifts from the actual *.sh set, so keep it in sync
 # whenever you add or remove a script under claude/.
-statusline.sh
-hooks/session-state.sh
-hooks/subagent-idle-gate.sh
+tmux-opener-statusline.sh
+hooks/tmux-opener-session-state.sh
+hooks/tmux-opener-subagent-idle-gate.sh
 hooks/tmux-opener-bell.sh

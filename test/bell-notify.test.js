@@ -17,7 +17,7 @@ const {
   shouldTrackSoundAck,
   shouldOfferSoundUnlock,
   decideNotifySoundToggle,
-  resolveNotifySoundToggleScope,
+  resolveConfigWriteScope,
 } = require('../src/bell-notify.ts');
 
 // The bell *reason* half of notifyBell (#47/#64) lives in status-bridge; the
@@ -646,26 +646,26 @@ test('#127: toggling ON->OFF flips to off and stays silent', () => {
 // the exact failure a `.vscode/settings.json` override reproduced. Priority is
 // folder > workspace > global > default (VS Code's resolution order).
 test('#127: toggle writes Global when only the default applies', () => {
-  assert.strictEqual(resolveNotifySoundToggleScope(undefined), 'global');
-  assert.strictEqual(resolveNotifySoundToggleScope({}), 'global');
+  assert.strictEqual(resolveConfigWriteScope(undefined), 'global');
+  assert.strictEqual(resolveConfigWriteScope({}), 'global');
 });
 
 test('#127: toggle writes Global when only a global value is set', () => {
-  assert.strictEqual(resolveNotifySoundToggleScope({ globalValue: false }), 'global');
+  assert.strictEqual(resolveConfigWriteScope({ globalValue: false }), 'global');
 });
 
 test('#127: a workspace override wins, so the toggle writes Workspace', () => {
   // Global loses to the workspace override; writing Global would leave the
   // effective value unchanged (the stuck no-op). Write where the value lives.
   assert.strictEqual(
-    resolveNotifySoundToggleScope({ globalValue: true, workspaceValue: false }),
+    resolveConfigWriteScope({ globalValue: true, workspaceValue: false }),
     'workspace',
   );
 });
 
 test('#127: a workspace-folder override wins over workspace and global', () => {
   assert.strictEqual(
-    resolveNotifySoundToggleScope({
+    resolveConfigWriteScope({
       globalValue: true,
       workspaceValue: true,
       workspaceFolderValue: false,
@@ -677,9 +677,50 @@ test('#127: a workspace-folder override wins over workspace and global', () => {
 test('#127: a `false` override is still a set value, not treated as absent', () => {
   // The guard is `!== undefined`, so `false` (the muting override the bug
   // report hinged on) selects its scope rather than falling through to Global.
-  assert.strictEqual(resolveNotifySoundToggleScope({ workspaceValue: false }), 'workspace');
+  assert.strictEqual(resolveConfigWriteScope({ workspaceValue: false }), 'workspace');
   assert.strictEqual(
-    resolveNotifySoundToggleScope({ workspaceFolderValue: false }),
+    resolveConfigWriteScope({ workspaceFolderValue: false }),
     'workspaceFolder',
   );
+});
+
+// #208 (plan #207 task 2): the scope rule is value-type-agnostic — it keys off
+// which tier is *set* (`!== undefined`), never the value's type — so font/size
+// persistence (#209) can reuse it for string/number settings unchanged.
+test('#208: resolves the winning scope for string values (font family)', () => {
+  assert.strictEqual(resolveConfigWriteScope({ globalValue: 'Menlo' }), 'global');
+  assert.strictEqual(
+    resolveConfigWriteScope({ globalValue: 'Menlo', workspaceValue: 'Fira Code' }),
+    'workspace',
+  );
+  assert.strictEqual(
+    resolveConfigWriteScope({
+      globalValue: 'Menlo',
+      workspaceValue: 'Fira Code',
+      workspaceFolderValue: 'M PLUS 1 Code',
+    }),
+    'workspaceFolder',
+  );
+});
+
+test('#208: resolves the winning scope for number values (font size)', () => {
+  assert.strictEqual(resolveConfigWriteScope({ globalValue: 14 }), 'global');
+  assert.strictEqual(
+    resolveConfigWriteScope({ globalValue: 14, workspaceValue: 12 }),
+    'workspace',
+  );
+  assert.strictEqual(resolveConfigWriteScope({ workspaceFolderValue: 16 }), 'workspaceFolder');
+});
+
+test('#208: an empty string / zero is a set value, not treated as absent', () => {
+  // The guard is `!== undefined`, so falsy-but-defined values (`''`, `0`) still
+  // select their scope rather than falling through to Global — the string/number
+  // analogue of the `false` override case above.
+  assert.strictEqual(resolveConfigWriteScope({ workspaceValue: '' }), 'workspace');
+  assert.strictEqual(resolveConfigWriteScope({ workspaceFolderValue: 0 }), 'workspaceFolder');
+});
+
+test('#208: only the default applies resolves to Global for any value type', () => {
+  assert.strictEqual(resolveConfigWriteScope({}), 'global');
+  assert.strictEqual(resolveConfigWriteScope(undefined), 'global');
 });

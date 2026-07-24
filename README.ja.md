@@ -94,7 +94,7 @@ Claude Code では 3 通りの構成があり、これらは**加算できる追
 | --- | --- | --- |
 | **A. スクリプト無し**（既定） | Claude Code 本体 | `"terminal_bell"` — **必要**（他に鳴らすものが無い） |
 | **B. ベル理由サウンド**（「入力待ち」を別の音で） | `tmux-opener-bell.sh`（`Stop` / `Notification` フックから） | **非ベル**チャンネル（例: `"notifications_disabled"`） |
-| **C. サブエージェント対応 idle ゲート**（*本当に*アイドルのときだけ鳴らす） | `subagent-idle-gate.sh` → `tmux-opener-bell.sh` | **非ベル**チャンネル（例: `"notifications_disabled"`） |
+| **C. サブエージェント対応 idle ゲート**（*本当に*アイドルのときだけ鳴らす） | `tmux-opener-subagent-idle-gate.sh` → `tmux-opener-bell.sh` | **非ベル**チャンネル（例: `"notifications_disabled"`） |
 
 C は B の上に積む構成です。B の `Notification` → ask の配線をそのまま残し、*完了*の
 ベルだけをゲート経由にするので、B と C は積めます。積めないのは**A と、B / C いずれか
@@ -155,10 +155,10 @@ BEL は AI 専用の信号ではないため、他の要因でも鳴ります。
 にある小さなスクリプトが動かします。`~/.claude` へそのままの構造でインストールします:
 
 ```
-claude/statusline.sh                ->  ~/.claude/statusline.sh
-claude/hooks/session-state.sh       ->  ~/.claude/hooks/session-state.sh
-claude/hooks/subagent-idle-gate.sh  ->  ~/.claude/hooks/subagent-idle-gate.sh
-claude/hooks/tmux-opener-bell.sh    ->  ~/.claude/hooks/tmux-opener-bell.sh
+claude/tmux-opener-statusline.sh                ->  ~/.claude/tmux-opener-statusline.sh
+claude/hooks/tmux-opener-session-state.sh       ->  ~/.claude/hooks/tmux-opener-session-state.sh
+claude/hooks/tmux-opener-subagent-idle-gate.sh  ->  ~/.claude/hooks/tmux-opener-subagent-idle-gate.sh
+claude/hooks/tmux-opener-bell.sh                ->  ~/.claude/hooks/tmux-opener-bell.sh
 ```
 
 **AIコーディングエージェントに任せたい場合。** 次のプロンプトをそのまま貼り付けて
@@ -181,7 +181,7 @@ claude/hooks/tmux-opener-bell.sh    ->  ~/.claude/hooks/tmux-opener-bell.sh
 
 - **statusline ブリッジ**は純粋な追加機能です。ベルを鳴らさず、通知にコンテキスト率と
   コストを足すだけなので、上記のどの構成にも積めます。
-- 2 本の**ベルフック**（`tmux-opener-bell.sh`・`subagent-idle-gate.sh`）は BEL の
+- 2 本の**ベルフック**（`tmux-opener-bell.sh`・`tmux-opener-subagent-idle-gate.sh`）は BEL の
   発生源を引き受けます。構成 B / C で Claude Code 側の `terminal_bell` を切る必要が
   あるのはこのためです。
 
@@ -243,7 +243,7 @@ bash install-claude.sh --src gh:ShirokumaLibrary/tmux-opener/claude
 $0.45)`）。
 
 拡張機能は Claude Code の内部 JSON を直接見られませんが、statusline スクリプトは
-その JSON を標準入力で受け取れます。そこで参考の `statusline.sh` が抜粋を
+その JSON を標準入力で受け取れます。そこで参考の `tmux-opener-statusline.sh` が抜粋を
 `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/status-<セッション>.json` へ書き出し、
 拡張機能がベル発火時に（30 秒以内の新しいものだけ）読み取ります。完全に opt-in で、
 スクリプトを入れなければ挙動は変わりません。
@@ -261,7 +261,7 @@ VS Code を同じ値で起動してください。
 statusline を登録します:
 
 ```json
-"statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
+"statusLine": { "type": "command", "command": "~/.claude/tmux-opener-statusline.sh" }
 ```
 
 **実行中 / アイドルの表示。** statusline には回転するスピナー（`⠋ working`）が生成中
@@ -273,7 +273,7 @@ statusline を登録します:
   は見分けられますが、フックの wedge は見分けられません — フックが `running` を書いた
   まま固まっても statusline は呼ばれ続け、スピナーは回り続けます。
 - この状態は statusline 自身の標準入力からは分からないため、2 つのフックが駆動する
-  もう 1 本のスクリプト [`claude/hooks/session-state.sh`](claude/hooks/session-state.sh)
+  もう 1 本のスクリプト [`claude/hooks/tmux-opener-session-state.sh`](claude/hooks/tmux-opener-session-state.sh)
   から受け取ります。これは任意で、入れなくてもインジケーターが `○`（不明）のままになる
   だけで、他の表示は問題なく動きます。
 - このインジケーターは、メインのターンが停止した後もサブエージェントが動いている間は
@@ -285,15 +285,15 @@ statusline を登録します:
 ```json
 "statusLine": {
   "type": "command",
-  "command": "~/.claude/statusline.sh",
+  "command": "~/.claude/tmux-opener-statusline.sh",
   "refreshInterval": 1
 },
 "hooks": {
   "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/session-state.sh running" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-session-state.sh running" } ] }
   ],
   "Stop": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/session-state.sh stopped" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-session-state.sh stopped" } ] }
   ]
 }
 ```
@@ -407,7 +407,7 @@ elicitation ダイアログ — です。
 
 **完了系・idle 系のタイプを足さないでください**（`agent_completed`・
 `elicitation_complete`・`idle_prompt`）。完了のベルには所有者が 1 つだけあります —
-`Stop` フック（後述のゲートを入れるなら `subagent-idle-gate.sh main-stop`）です。
+`Stop` フック（後述のゲートを入れるなら `tmux-opener-subagent-idle-gate.sh main-stop`）です。
 そこに第二の発生源を足すことが、ゲートが防いでいる早すぎるベルを呼び戻します。
 
 「入力待ち」の音は `tmuxOpener.notifySoundPresetOnAsk` で選びます（既定は `siren`
@@ -424,7 +424,7 @@ elicitation ダイアログ — です。
 保留できるので、ベルが「調整役が一時停止した」ではなく「本当に完了した」を意味する
 ようになります。
 
-参考の `subagent-idle-gate.sh` は、稼働中のサブエージェントを
+参考の `tmux-opener-subagent-idle-gate.sh` は、稼働中のサブエージェントを
 `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener/subagents-<session>/` 配下のマーカー
 ファイル（Claude Code の `session_id` をキーに、サブエージェント 1 つにつき 1 ファイル）
 として追跡し、その集合が空になったときにだけ発火します:
@@ -472,7 +472,7 @@ elicitation ダイアログ — です。
 しないようにします。両方を `~/.claude/hooks/` に置く必要があるのはこのためです —
 ゲートはベルを自分自身からの相対で解決し、パスの設定を持ちません。
 
-参考の `statusline.sh` も同じマーカー集合を読み、サブエージェントが 1 つでも動いている
+参考の `tmux-opener-statusline.sh` も同じマーカー集合を読み、サブエージェントが 1 つでも動いている
 間は `idle` ではなく `working` を出し続けます — ゲートがベルを保留している最中に
 「終わった」と読めることはありません。件数は出しません（起動したサブエージェントは
 Claude Code 自身が既に表示しています）。
@@ -488,22 +488,22 @@ Claude Code 自身が既に表示しています）。
 ```json
 "hooks": {
   "Stop": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh main-stop" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh main-stop" } ] }
   ],
   "PreToolUse": [
     {
       "matcher": "Agent",
-      "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh pending" } ]
+      "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh pending" } ]
     }
   ],
   "SubagentStart": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh start" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh start" } ] }
   ],
   "SubagentStop": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh stop" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh stop" } ] }
   ],
   "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/subagent-idle-gate.sh reset" } ] }
+    { "hooks": [ { "type": "command", "command": "~/.claude/hooks/tmux-opener-subagent-idle-gate.sh reset" } ] }
   ],
   "Notification": [
     {
@@ -524,7 +524,7 @@ Claude Code 自身が既に表示しています）。
 **BEL の発生源はゲートに一本化する — 第二の発生源にゲートを迂回させない。**
 これが構成 C で、切るべき発生源は 1 つではなく 2 つあります。
 
-- `Stop` フックは `tmux-opener-bell.sh stop` ではなく `subagent-idle-gate.sh main-stop`
+- `Stop` フックは `tmux-opener-bell.sh stop` ではなく `tmux-opener-subagent-idle-gate.sh main-stop`
   を呼ぶこと。両者は排他です: 構成 B のベル直呼びをゲートと**併用してはいけません**
   ——メインターンの停止ごとに鳴ってしまい、ゲートの意味が失われます。ゲートは自分で
   `tmux-opener-bell.sh stop` を呼びますが、それは本当に idle だと判定したときだけです。
@@ -545,7 +545,7 @@ Claude Code 自身が既に表示しています）。
 | `tmuxOpener.notifyToast` | ポップアップ通知（トースト）を表示します。既定で有効。無効にすると音だけ残せます。両方を止めるときは `notifyOnBell` を false に。 |
 | `tmuxOpener.notifySoundPreset` | 鳴らすサウンド: `classic` / `siren` / `sos` / `cascade` / `trill`。 |
 | `tmuxOpener.notifySoundPresetOnAsk` | ベルが完了ではなく「ask」（入力待ち）のときに鳴らすサウンド。既定は `siren`。参考の `tmux-opener-bell.sh` フックが必要。 |
-| `tmuxOpener.notifyBridgeStatusline` | statusline ブリッジのコンテキスト率とコストを通知に追記します。既定で有効。参考 `statusline.sh` が必要。 |
+| `tmuxOpener.notifyBridgeStatusline` | statusline ブリッジのコンテキスト率とコストを通知に追記します。既定で有効。参考 `tmux-opener-statusline.sh` が必要。 |
 
 ## 開発に参加する
 

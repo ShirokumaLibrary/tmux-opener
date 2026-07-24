@@ -32,7 +32,7 @@ import {
   detectBellEdges,
   initialBellState,
   parseBellingSessions,
-  resolveNotifySoundToggleScope,
+  resolveConfigWriteScope,
   shouldNotifySession,
   shouldOfferSoundUnlock,
   shouldTrackSoundAck,
@@ -40,6 +40,22 @@ import {
   type BellState,
   type SoundOutcome,
 } from './bell-notify.js';
+import {
+  buildInstallCommand,
+  buildReadmeUrl,
+  classifyInstallState,
+  shouldShowInstallNudge,
+} from './claude-install.js';
+import {
+  BUNDLED_FONT_FAMILY,
+  FONT_REGISTRY,
+  fontExtensionIds,
+  resolveBundledFontSource,
+  resolveExistingFontSource,
+  shouldNotifyFontExtensionMissing,
+} from './font-registry.js';
+import { buildFontOptions } from './font-options.js';
+import { resolveTerminalFontConfig } from './terminal-font.js';
 
 /**
  * Background bell poll interval (ms). Design #16 recommends 2–3s; 2500ms keeps
@@ -335,16 +351,31 @@ function resolvePtyEnv(): { [key: string]: string } {
   return env;
 }
 
+/**
+ * The explicitly-set numeric value of a config key, or `undefined` when the user
+ * left it at its default. `terminal.integrated.fontSize` and `editor.fontSize`
+ * both ship concrete numeric defaults, so `get()` can never report "unset";
+ * `inspect()` is the only way to tell a user's choice from the default, which
+ * `resolveTerminalFontConfig` needs to keep the fontSize priority meaningful
+ * (#194).
+ */
+function explicitFontSize(inspection: { globalValue?: unknown; workspaceValue?: unknown; workspaceFolderValue?: unknown } | undefined): number | undefined {
+  const value = inspection?.workspaceFolderValue ?? inspection?.workspaceValue ?? inspection?.globalValue;
+  return typeof value === 'number' ? value : undefined;
+}
+
 function getTerminalFontConfig(): { fontFamily: string; fontSize: number } {
   const config = vscode.workspace.getConfiguration('tmuxOpener.terminal');
+  const terminalConfig = vscode.workspace.getConfiguration('terminal.integrated');
   const editorConfig = vscode.workspace.getConfiguration('editor');
 
-  const fontFamily =
-    config.get<string>('fontFamily', '') ||
-    editorConfig.get<string>('fontFamily', 'Menlo, Monaco, "Courier New", monospace');
-  const fontSize = config.get<number | null>('fontSize', null) ?? editorConfig.get<number>('fontSize', 14);
-
-  return { fontFamily, fontSize };
+  return resolveTerminalFontConfig({
+    tmuxFontFamily: config.get<string>('fontFamily', ''),
+    tmuxFontSize: config.get<number | null>('fontSize', null),
+    terminalFontFamily: terminalConfig.get<string>('fontFamily', ''),
+    terminalFontSize: explicitFontSize(terminalConfig.inspect<number>('fontSize')),
+    editorFontSize: explicitFontSize(editorConfig.inspect<number>('fontSize')),
+  });
 }
 
 /**
@@ -359,6 +390,23 @@ function getTerminalFontConfig(): { fontFamily: string; fontSize: number } {
  * Namespaced under the extension id so it can't collide with another key.
  */
 const SESSION_COMMANDS_STATE_KEY = 'tmuxOpener.sessionCommands';
+
+/**
+ * `globalState` key recording that the user dismissed the Claude Code install
+ * nudge with "Don't Show Again" (#163). It is **global**, not `workspaceState`:
+ * `~/.claude` is a user-global concern, so a dismiss in one workspace should
+ * quiet the nudge everywhere. Namespaced under the extension id so it can't
+ * collide with another key.
+ */
+const CLAUDE_INSTALL_NUDGE_DISMISSED_STATE_KEY = 'tmuxOpener.claudeInstallNudgeDismissed';
+
+/**
+ * `globalState` key recording that the user dismissed the "font extension not
+ * installed" nudge with "Don't Show Again" (#186). Global for the same reason as
+ * the Claude nudge: a font extension is a user-global install, so one dismiss
+ * quiets it in every workspace.
+ */
+const FONT_EXTENSION_NUDGE_DISMISSED_STATE_KEY = 'tmuxOpener.fontExtensionNudgeDismissed';
 
 class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
@@ -440,6 +488,22 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    */
   private warnedTmuxMissing = false;
   /**
+   * Guards the passive Claude Code install nudge so the attach on view-open
+   * pops it at most once per activation (#163), mirroring `warnedTmuxMissing`.
+   * The permanent, cross-activation dismiss lives in `globalState` under
+   * `CLAUDE_INSTALL_NUDGE_DISMISSED_STATE_KEY`; this flag only debounces within
+   * one activation.
+   */
+  private nudgedClaudeInstall = false;
+  /**
+   * Guards the "font extension not installed" nudge (#186) so it pops at most
+   * once per activation, mirroring `nudgedClaudeInstall`. The permanent,
+   * cross-activation dismiss lives in `globalState` under
+   * `FONT_EXTENSION_NUDGE_DISMISSED_STATE_KEY`; this flag only debounces within
+   * one activation (the config channel re-fires on every settings change).
+   */
+  private notifiedFontExtensionMissing = false;
+  /**
    * Serializes toolbar toggles of `tmuxOpener.notifySound` (#127). `config.get`
    * lags an in-flight `config.update` (a slow round trip under Remote-SSH), so
    * two quick clicks could both read the old value, compute the same `next`, and
@@ -452,6 +516,14 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly workspaceState: vscode.Memento,
+    private readonly globalState: vscode.Memento,
+    private readonly repositoryUrl: string,
+    // The `tmuxOpener.terminal.fontFamily` / `fontSize` enums, read from this
+    // extension's own package.json contributes in `activate` and handed in so the
+    // fontOptions push (#209) offers the same choices the Settings UI does without
+    // duplicating the list (drift-free — one source in package.json).
+    private readonly fontFamilyEnum: ReadonlyArray<string> = [],
+    private readonly fontSizeEnum: ReadonlyArray<number | null> = [],
   ) {
     this.viewReady = new Promise((resolve) => {
       this.resolveView = resolve;
@@ -481,9 +553,24 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
+    // Widen localResourceRoots to include any installed font extension's root
+    // (#185). This — not a CSP change — is what lets the webview borrow a font
+    // from another extension via asWebviewUri: without the root, VS Code refuses
+    // to serve the URL before CSP is even consulted (SUB-A/#183). The vendored
+    // font under `media/` that the first root used to also cover was removed
+    // (#199), so an uninstalled font extension now leaves no font source here
+    // and the terminal falls to the OS monospace (the dual-source fallback is
+    // gone).
+    const fontExtensionRoots = fontExtensionIds()
+      .map((id) => vscode.extensions.getExtension(id))
+      .filter((ext): ext is vscode.Extension<unknown> => ext !== undefined)
+      .map((ext) => ext.extensionUri);
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.extensionUri, 'media'),
+        ...fontExtensionRoots,
+      ],
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message));
@@ -514,6 +601,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     id?: number;
     played?: boolean;
     reason?: string;
+    family?: string;
+    size?: number;
   }): void {
     if (message.type === 'input' && message.data !== undefined) {
       this.ptyProcess?.write(message.data);
@@ -524,6 +613,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     } else if (message.type === 'ready') {
       this.pushL10n();
       this.pushWebviewConfig();
+      this.pushFontOptions();
       this.pushProfiles();
       this.pushSessions();
       void this.attachInitialSession();
@@ -539,6 +629,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       void vscode.commands.executeCommand('tmux-opener.openSettings');
     } else if (message.type === 'toggleNotifySound') {
       void this.toggleNotifySound();
+    } else if (message.type === 'selectFont') {
+      void this.selectFont(message.family, message.size);
     } else if (message.type === 'killSession' && message.name) {
       void this.killSession(message.name);
     } else if (message.type === 'restartSession') {
@@ -1005,6 +1097,137 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       .getConfiguration('tmuxOpener')
       .get<boolean>('notifySound', true);
     this.view?.webview.postMessage({ type: 'config', ...getTerminalFontConfig(), notifySound });
+    // The bundled font is borrowed from a dedicated font extension when
+    // installed (#185); with the vendored copy removed (#199), if no font
+    // extension supplies it the terminal renders with the OS monospace. If the
+    // user has selected the bundled family but no font extension supplies it,
+    // nudge them once (#186). This rides the config channel so it re-evaluates
+    // when the fontFamily setting changes, not only on first render.
+    this.maybeNotifyFontExtensionMissing();
+  }
+
+  /**
+   * Passive nudge (#186, plan #182 task 4) shown when the user has selected the
+   * bundled "M PLUS 1 Code" family but no font extension is installed to supply
+   * it, so the terminal is rendering with the OS monospace (the vendored copy
+   * was removed in #199). The decision (family selected AND extension absent AND
+   * not-yet-notified) is `shouldNotifyFontExtensionMissing`; here we only own the
+   * VS Code surface. Debounced per activation (`notifiedFontExtensionMissing`)
+   * and silenced permanently by "Don't Show Again" (`globalState`), mirroring the
+   * Claude install nudge — the nudge is informational, not a blocker.
+   */
+  private maybeNotifyFontExtensionMissing(): void {
+    if (this.globalState.get<boolean>(FONT_EXTENSION_NUDGE_DISMISSED_STATE_KEY, false)) {
+      return;
+    }
+    const { fontFamily } = getTerminalFontConfig();
+    const getExtension = (id: string) => vscode.extensions.getExtension(id);
+    if (
+      !shouldNotifyFontExtensionMissing(fontFamily, getExtension, this.notifiedFontExtensionMissing)
+    ) {
+      return;
+    }
+    this.notifiedFontExtensionMissing = true;
+
+    const dontShow = vscode.l10n.t("Don't Show Again");
+    void vscode.window
+      .showInformationMessage(
+        vscode.l10n.t(
+          "Tmux Opener: the M PLUS 1 Code font extension isn't installed, so the terminal is rendering with your OS's default monospace font. To use M PLUS 1 Code, install the dedicated font extension.",
+        ),
+        dontShow,
+      )
+      .then((choice) => {
+        if (choice === dontShow) {
+          void this.globalState.update(FONT_EXTENSION_NUDGE_DISMISSED_STATE_KEY, true);
+        }
+      });
+  }
+
+  /**
+   * Push the font picker's choices to the webview (#209, plan #207 task 3) on its
+   * own `fontOptions` message — deliberately NOT folded into the hot-path `config`
+   * message (`pushWebviewConfig`), which stays untouched. The list offers the
+   * package.json fontFamily/fontSize enums, but a registered bundled family
+   * (FONT_REGISTRY) is included only when it actually resolves — the supplying
+   * font extension is installed AND ships the file (#208's
+   * `resolveExistingFontSource`). The `fileExists` predicate is the real
+   * `fs.existsSync` injected as a closure that joins the contract-relative file
+   * against the supplying extension's `extensionUri` (mirroring `getHtml`); the
+   * vscode-free `buildFontOptions` owns the substring-match + filter decision.
+   * Re-pushed on `ready` and whenever a font extension is installed/removed
+   * (`vscode.extensions.onDidChange`, wired in `activate`).
+   */
+  pushFontOptions(): void {
+    if (!this.view) {
+      return;
+    }
+    const getExtension = (id: string) => vscode.extensions.getExtension(id);
+    const fileExists = (relFile: string): boolean =>
+      fontExtensionIds().some((id) => {
+        const ext = vscode.extensions.getExtension(id);
+        if (!ext) {
+          return false;
+        }
+        const abs = vscode.Uri.joinPath(ext.extensionUri, ...relFile.split('/')).fsPath;
+        return fs.existsSync(abs);
+      });
+    const isFamilyAvailable = (family: string): boolean =>
+      resolveExistingFontSource(family, getExtension, fileExists).source === 'extension';
+    const { fontFamily, fontSize } = getTerminalFontConfig();
+    const payload = buildFontOptions(
+      this.fontFamilyEnum,
+      this.fontSizeEnum,
+      fontFamily,
+      fontSize,
+      FONT_REGISTRY.map((e) => e.family),
+      isFamilyAvailable,
+    );
+    void this.view.webview.postMessage({ type: 'fontOptions', ...payload });
+  }
+
+  /**
+   * Persist a font choice made from the webview picker (#209, plan #207 task 2).
+   * The webview owns no Configuration API, so it asks the host to write back
+   * `tmuxOpener.terminal.fontFamily` / `fontSize`. Each write targets whichever
+   * scope currently *wins* (`resolveConfigWriteScope`, generalized in #208), not a
+   * fixed Global: a workspace/folder override would otherwise swallow a Global
+   * write and leave the effective value — and the terminal's render — unchanged.
+   * The updated value flows back to the terminal through the existing
+   * `onDidChangeConfiguration` -> `pushWebviewConfig` path (untouched), and the
+   * picker's selection echo through the `fontOptions` re-push there is out of
+   * scope here (webview UI is #210).
+   */
+  private async selectFont(family?: string, size?: number): Promise<void> {
+    const config = vscode.workspace.getConfiguration('tmuxOpener.terminal');
+    if (typeof family === 'string') {
+      await config.update(
+        'fontFamily',
+        family,
+        this.configTargetFor(config.inspect<string>('fontFamily')),
+      );
+    }
+    if (typeof size === 'number') {
+      await config.update(
+        'fontSize',
+        size,
+        this.configTargetFor(config.inspect<number>('fontSize')),
+      );
+    }
+  }
+
+  /** Map a `resolveConfigWriteScope` token to the VS Code `ConfigurationTarget`. */
+  private configTargetFor(
+    inspect:
+      | { globalValue?: unknown; workspaceValue?: unknown; workspaceFolderValue?: unknown }
+      | undefined,
+  ): vscode.ConfigurationTarget {
+    const scope = resolveConfigWriteScope(inspect);
+    return scope === 'workspaceFolder'
+      ? vscode.ConfigurationTarget.WorkspaceFolder
+      : scope === 'workspace'
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
   }
 
   /**
@@ -1022,7 +1245,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    * - It read the *effective* value but wrote to Global, so a workspace/folder
    *   override made the toggle a stuck no-op (Global loses to the override, the
    *   effective value never changes, no echo fires). We write to whichever scope
-   *   actually wins (`resolveNotifySoundToggleScope`) so the flip always lands.
+   *   actually wins (`resolveConfigWriteScope`) so the flip always lands.
    * - It derived `next` from a value that lags an in-flight update, so concurrent
    *   clicks could drop or invert a toggle. `notifySoundToggleInFlight` serializes
    *   them.
@@ -1036,13 +1259,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       const config = vscode.workspace.getConfiguration('tmuxOpener');
       const current = config.get<boolean>('notifySound', true);
       const { next, playConfirmation } = decideNotifySoundToggle(current);
-      const scope = resolveNotifySoundToggleScope(config.inspect<boolean>('notifySound'));
-      const target =
-        scope === 'workspaceFolder'
-          ? vscode.ConfigurationTarget.WorkspaceFolder
-          : scope === 'workspace'
-            ? vscode.ConfigurationTarget.Workspace
-            : vscode.ConfigurationTarget.Global;
+      const target = this.configTargetFor(config.inspect<boolean>('notifySound'));
       await config.update('notifySound', next, target);
       if (playConfirmation) {
         const preset = config.get<string>('notifySoundPreset', 'classic');
@@ -1073,6 +1290,14 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
         // current state rather than the action.
         notifySoundOn: vscode.l10n.t('Notification sound: on'),
         notifySoundOff: vscode.l10n.t('Notification sound: off'),
+        // The toolbar font picker (#210): the button title and the two section
+        // headers / editor-default label inside the reused context-menu popup.
+        selectFont: vscode.l10n.t('Select Font'),
+        fontFamilyHeader: vscode.l10n.t('Font Family'),
+        fontSizeHeader: vscode.l10n.t('Font Size'),
+        fontEditorDefault: vscode.l10n.t('Editor default'),
+        // Tag on a bundled family row, e.g. "M PLUS 1 Code (font extension)".
+        fontBundledSuffix: vscode.l10n.t('font extension'),
         // Toolbar action titles for the running tool ({0} is the tool label,
         // e.g. "Claude Code"). The webview replaces its English fallback with
         // these once l10n arrives, so they must ship here too (#136).
@@ -1207,6 +1432,14 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
    * spawned a session on every open) — we show the default view instead.
    */
   private async attachInitialSession(): Promise<void> {
+    // Passive install nudge (#163): independent of the session/tmux outcome
+    // below (a Claude Code user may have tmux and a session yet still lack the
+    // helper scripts), so fire it here — fire-and-forget so it never delays the
+    // attach, and self-gated to once per activation / permanent dismiss.
+    void this.maybeNudgeClaudeInstall().catch(() => {
+      /* best-effort nudge; failures are non-fatal and must not break the attach */
+    });
+
     const baseName = currentBaseName();
     if (!baseName) {
       return;
@@ -1224,6 +1457,61 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       return;
     }
     this.showDefaultView();
+  }
+
+  /**
+   * The view-open passive nudge for the Claude Code helper scripts (#163,
+   * design #160 D3). Detects the install state (the same 4-file `fs.existsSync`
+   * probe the persistent `installClaudeScripts` command uses), then defers the
+   * show/skip decision to the pure `shouldShowInstallNudge`: at most once per
+   * activation (`nudgedClaudeInstall`) and never after a permanent dismiss
+   * (`globalState`). Actions mirror the persistent command's "Copy Install
+   * Command" / "Open Instructions", plus "Don't Show Again" which records the
+   * permanent dismiss. The extension never writes to `~/.claude` here either —
+   * it only copies a command or opens the README (design #160, plan A).
+   */
+  private async maybeNudgeClaudeInstall(): Promise<void> {
+    const permanentlyDismissed = this.globalState.get<boolean>(
+      CLAUDE_INSTALL_NUDGE_DISMISSED_STATE_KEY,
+      false,
+    );
+    const claudeDir = join(homedir(), '.claude');
+    const state = classifyInstallState((rel) => fs.existsSync(join(claudeDir, rel)));
+    if (
+      !shouldShowInstallNudge(state, {
+        warnedThisActivation: this.nudgedClaudeInstall,
+        permanentlyDismissed,
+      })
+    ) {
+      return;
+    }
+    this.nudgedClaudeInstall = true;
+
+    const command = buildInstallCommand(this.repositoryUrl);
+    const readmeUrl = buildReadmeUrl(this.repositoryUrl);
+    const message =
+      state === 'partial'
+        ? vscode.l10n.t(
+            'The Claude Code helper scripts are only partially installed. Copy the install command and run it in this terminal to complete the install.',
+          )
+        : vscode.l10n.t(
+            'The Claude Code helper scripts are not installed. Copy the install command and run it in this terminal to set them up.',
+          );
+
+    const copy = vscode.l10n.t('Copy Install Command');
+    const openDocs = vscode.l10n.t('Open Instructions');
+    const dontShow = vscode.l10n.t("Don't Show Again");
+    const choice = await vscode.window.showInformationMessage(message, copy, openDocs, dontShow);
+    if (choice === copy) {
+      await vscode.env.clipboard.writeText(command);
+      void vscode.window.showInformationMessage(
+        vscode.l10n.t('Install command copied. Paste it into a tmux terminal and run it.'),
+      );
+    } else if (choice === openDocs) {
+      void vscode.env.openExternal(vscode.Uri.parse(readmeUrl));
+    } else if (choice === dontShow) {
+      await this.globalState.update(CLAUDE_INSTALL_NUDGE_DISMISSED_STATE_KEY, true);
+    }
   }
 
   async openNewSession(profile?: TmuxProfile): Promise<void> {
@@ -1885,7 +2173,46 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     const addonClipboardJs = mediaXterm('addon-clipboard.js');
     const keymapUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-keymap.js'));
     const soundUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-sound.js'));
+    const fontModuleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-font.js'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-terminal.js'));
+    // Bundled-font resolution (#185, design #181 case A; vendored fallback
+    // removed in #199). A dedicated font extension (`providedFont` contract,
+    // #184) supplies the face when installed; the @font-face family stays
+    // 'M PLUS 1 Code' and the config value is untouched — only the byte source
+    // (and declared weight) come from it. `font-src ${webview.cspSource}` covers
+    // it: asWebviewUri rewrites the borrowed extension's file to this webview's
+    // own resource authority, which is exactly what cspSource returns (verified
+    // on-device, SUB-A/#183), so the CSP content string is left unchanged. When
+    // no font extension supplies the face the resolution is `none`: no
+    // @font-face is injected and `"M PLUS 1 Code", monospace` falls to the OS
+    // monospace.
+    const getFontExtension = (id: string) => vscode.extensions.getExtension(id);
+    const fontResolution = resolveBundledFontSource(BUNDLED_FONT_FAMILY, getFontExtension);
+    let fontFaceCss = '';
+    if (fontResolution.source === 'extension') {
+      const borrowedFontExtension = getFontExtension(fontResolution.extensionId);
+      if (borrowedFontExtension) {
+        const fontFileUri = vscode.Uri.joinPath(
+          borrowedFontExtension.extensionUri,
+          ...fontResolution.file.split('/'),
+        );
+        const fontUri = webview.asWebviewUri(fontFileUri);
+        // Bundled font (#174/#175) borrowed from a font extension (#185). The
+        // font-weight is the axis the resolved TTF declares (defaulting to the
+        // face's fvar wght 100–700 when the providedFont contract omits it).
+        // xterm only ever asks for 400/700, so this is a fidelity detail, not
+        // behavioural. font-display: block holds text invisible until the face
+        // loads rather than flashing a fallback, which pairs with the webview's
+        // document.fonts.load await (resolveFontForMeasure).
+        fontFaceCss = `  @font-face {
+    font-family: 'M PLUS 1 Code';
+    src: url(${fontUri}) format('truetype');
+    font-weight: ${fontResolution.weight};
+    font-display: block;
+  }
+`;
+      }
+    }
     const codiconCss = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css'),
     );
@@ -1899,7 +2226,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 <link rel="stylesheet" href="${xtermCss}">
 <link rel="stylesheet" href="${codiconCss}">
 <style>
-  html { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+${fontFaceCss}  html { height: 100%; margin: 0; padding: 0; overflow: hidden; }
   body {
     height: 100%; margin: 0; padding: 0; overflow: hidden;
     display: flex;
@@ -1952,6 +2279,70 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     text-overflow: ellipsis;
   }
   #session-title.empty { opacity: 0.6; font-style: italic; }
+
+  /* A 2nd toolbar row (#217, plan #216, design #215): an always-on chip showing
+     the effective font "{family} · {size}". Fixed height like #toolbar, so it
+     never resizes the terminal after first paint (no fit() churn) — the terminal
+     column simply loses one 26px row, the trade-off design #215 accepts (it is
+     the deliberate re-adoption of design #204's rejected option C, per the #214
+     user request). Do NOT make it conditional/collapsible to "soften" that. */
+  #font-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-shrink: 0;
+    gap: 4px;
+    height: 26px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-bottom: 1px solid var(--vscode-panel-border, transparent);
+    user-select: none;
+  }
+  /* Reproduces a select box: a content-width bordered control with the current
+     value on the left (ellipsized past a cap) and a chevron on the right. Opens
+     the same #context-menu popup the removed 1st-row #selectFont icon used.
+     Content-width (not flex:1) so the chip does not force itself to fill the
+     toolbar's remaining space — only as wide as the family name needs, up to
+     .font-chip-label's max-width. */
+  .font-chip {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    min-width: 0;
+    gap: 4px;
+    height: 20px;
+    padding: 0 4px 0 8px;
+    box-sizing: border-box;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--vscode-foreground);
+    background: var(--vscode-dropdown-background, transparent);
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, transparent));
+    border-radius: 5px;
+  }
+  .font-chip:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+  /* The value text; capped and ellipsized so a pathologically long family name
+     never grows the chip past a reasonable width or the row height. */
+  .font-chip-label {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 180px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .font-chip .codicon { font-size: 12px; line-height: 16px; flex-shrink: 0; }
+  /* The size chip (#222) hugs the 2-digit size (≈44px incl. chevron/padding).
+     Its label needs no ellipsis or width cap (a size never overflows). This is
+     the deliberate re-adoption of design #215's rejected option D (per the #219
+     user request) — both chips are content-width rather than either stretching
+     to fill the toolbar. Do NOT add width juggling or hide either chip at
+     narrow widths to "soften" it. */
+  .font-size-chip .font-chip-label {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+  }
 
   /* Mirrors terminal.integrated.tabs.location default ('right') and the
      tab list's actual constraints from VS Code's SplitView: default 120px,
@@ -2032,6 +2423,26 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground));
   }
   #context-menu .menu-item.unavailable { opacity: 0.6; }
+  /* Font picker rows (#210): a leading fixed-width check gutter so labels stay
+     aligned whether or not the row is the current selection, mirroring VS Code's
+     own menu check column. The check codicon only shows on the selected row. */
+  #context-menu .menu-item.font-item { padding-left: 6px; }
+  #context-menu .menu-item .check {
+    width: 16px;
+    flex-shrink: 0;
+    font-size: 14px;
+    line-height: 16px;
+    visibility: hidden;
+  }
+  #context-menu .menu-item.checked .check { visibility: visible; }
+  #context-menu .menu-header {
+    padding: 4px 12px 2px;
+    font-size: 11px;
+    text-transform: uppercase;
+    opacity: 0.6;
+    white-space: nowrap;
+    cursor: default;
+  }
   #context-menu .menu-separator {
     height: 0;
     margin: 4px 0;
@@ -2229,6 +2640,16 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     <span class="codicon codicon-gear"></span>
   </div>
 </div>
+<div id="font-toolbar">
+  <div class="font-chip" id="fontChip" role="button" title="${t('Font Family')}">
+    <span class="font-chip-label" id="fontChipLabel"></span>
+    <span class="codicon codicon-chevron-down"></span>
+  </div>
+  <div class="font-chip font-size-chip" id="fontSizeChip" role="button" title="${t('Font Size')}">
+    <span class="font-chip-label" id="fontSizeChipLabel"></span>
+    <span class="codicon codicon-chevron-down"></span>
+  </div>
+</div>
 <div id="main">
 <div id="terminal-wrap">
   <div id="terminal"></div>
@@ -2261,6 +2682,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 <script src="${addonClipboardJs}"></script>
 <script src="${keymapUri}"></script>
 <script src="${soundUri}"></script>
+<script src="${fontModuleUri}"></script>
 <script src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -2306,8 +2728,72 @@ async function pickAndOpenSession(terminalProvider: TmuxTerminalViewProvider): P
   }
 }
 
+/**
+ * The persistent `tmux-opener.installClaudeScripts` command: detect whether the
+ * reference Claude Code scripts are already in `~/.claude`, then offer to copy
+ * the clone-less remote install command or open the README. The extension never
+ * writes to `~/.claude`, runs the installer, or edits `settings.json` — the
+ * installer stays the sole writer with its backups and refusals (design #160).
+ * `installed` still offers a copy (for a reinstall / update, which the installer
+ * handles safely), so this never blocks. All I/O (homedir + existsSync + the
+ * README URL) is here; the classify/build decisions are the pure claude-install
+ * module.
+ */
+async function installClaudeScripts(context: vscode.ExtensionContext): Promise<void> {
+  const claudeDir = join(homedir(), '.claude');
+  const state = classifyInstallState((rel) => fs.existsSync(join(claudeDir, rel)));
+
+  const repositoryUrl: string = context.extension.packageJSON?.repository?.url ?? '';
+  const command = buildInstallCommand(repositoryUrl);
+  const readmeUrl = buildReadmeUrl(repositoryUrl);
+
+  const message =
+    state === 'installed'
+      ? vscode.l10n.t(
+          'The Claude Code helper scripts are already installed. To reinstall or update them, copy the install command and run it in this terminal.',
+        )
+      : state === 'partial'
+        ? vscode.l10n.t(
+            'The Claude Code helper scripts are only partially installed. Copy the install command and run it in this terminal to complete the install.',
+          )
+        : vscode.l10n.t(
+            'The Claude Code helper scripts are not installed. Copy the install command and run it in this terminal to set them up.',
+          );
+
+  const copy = vscode.l10n.t('Copy Install Command');
+  const openDocs = vscode.l10n.t('Open Instructions');
+  const choice = await vscode.window.showInformationMessage(message, copy, openDocs);
+  if (choice === copy) {
+    await vscode.env.clipboard.writeText(command);
+    void vscode.window.showInformationMessage(
+      vscode.l10n.t('Install command copied. Paste it into a tmux terminal and run it.'),
+    );
+  } else if (choice === openDocs) {
+    void vscode.env.openExternal(vscode.Uri.parse(readmeUrl));
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
-  const terminalProvider = new TmuxTerminalViewProvider(context.extensionUri, context.workspaceState);
+  // Read the fontFamily/fontSize enums from this extension's own package.json
+  // contributes so the fontOptions push (#209) offers exactly the choices the
+  // Settings UI does, without a second copy that could drift.
+  const fontProps: Record<string, { enum?: unknown[] }> =
+    context.extension.packageJSON?.contributes?.configuration?.properties ?? {};
+  const fontFamilyEnum = (fontProps['tmuxOpener.terminal.fontFamily']?.enum ?? []).filter(
+    (v): v is string => typeof v === 'string',
+  );
+  const fontSizeEnum = (fontProps['tmuxOpener.terminal.fontSize']?.enum ?? []).filter(
+    (v): v is number | null => v === null || typeof v === 'number',
+  );
+
+  const terminalProvider = new TmuxTerminalViewProvider(
+    context.extensionUri,
+    context.workspaceState,
+    context.globalState,
+    context.extension.packageJSON?.repository?.url ?? '',
+    fontFamilyEnum,
+    fontSizeEnum,
+  );
 
   const openSessionCmd = vscode.commands.registerCommand('tmux-opener.openSession', () =>
     pickAndOpenSession(terminalProvider),
@@ -2351,6 +2837,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const openSettingsCmd = vscode.commands.registerCommand('tmux-opener.openSettings', () =>
     vscode.commands.executeCommand('workbench.action.openSettings', `@ext:${context.extension.id}`),
   );
+  const installClaudeScriptsCmd = vscode.commands.registerCommand(
+    'tmux-opener.installClaudeScripts',
+    () => installClaudeScripts(context),
+  );
 
   const terminalViewRegistration = vscode.window.registerWebviewViewProvider(
     'tmuxOpener.terminal',
@@ -2359,7 +2849,14 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('tmuxOpener.terminal')) {
+    if (
+      e.affectsConfiguration('tmuxOpener.terminal') ||
+      // The terminal now inherits `terminal.integrated.font*` / `editor.fontSize`
+      // when its own settings are unset (#194), so re-push on those too.
+      e.affectsConfiguration('terminal.integrated.fontFamily') ||
+      e.affectsConfiguration('terminal.integrated.fontSize') ||
+      e.affectsConfiguration('editor.fontSize')
+    ) {
       terminalProvider.pushWebviewConfig();
     }
     if (e.affectsConfiguration('tmuxOpener.profiles')) {
@@ -2371,6 +2868,20 @@ export function activate(context: vscode.ExtensionContext): void {
     if (e.affectsConfiguration('tmuxOpener.notifySound')) {
       terminalProvider.pushWebviewConfig();
     }
+    // A font-family/size change from the Settings UI must also refresh the
+    // picker's current selection (#209). This is a separate channel from
+    // `pushWebviewConfig` (the hot-path `config` message stays untouched).
+    if (e.affectsConfiguration('tmuxOpener.terminal')) {
+      terminalProvider.pushFontOptions();
+    }
+  });
+
+  // Re-push the font choices when a font extension is installed or removed
+  // (#209, design #204 Low-1): a bundled family becomes (un)available without any
+  // settings change, so the picker's candidate list must follow. Kept separate
+  // from `onDidChangeConfiguration` — it reacts to the extension set, not config.
+  const extensionsListener = vscode.extensions.onDidChange(() => {
+    terminalProvider.pushFontOptions();
   });
 
   void updateProfileContexts();
@@ -2385,9 +2896,11 @@ export function activate(context: vscode.ExtensionContext): void {
     killCurrentCmd,
     toggleSidebarCmd,
     openSettingsCmd,
+    installClaudeScriptsCmd,
     terminalViewRegistration,
     terminalProvider,
     configListener,
+    extensionsListener,
   );
 }
 

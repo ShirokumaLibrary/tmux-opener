@@ -3,23 +3,24 @@
 #
 # Install:
 #   From a clone of the repository:  npm run claude:install
-#   It installs this file as ~/.claude/statusline.sh and the hook scripts as
-#   ~/.claude/hooks/*.sh, with the executable bit set. Don't edit the installed
-#   copies — they are generated from claude/ in the repository; edit there and
-#   install again.
+#   It installs this file as ~/.claude/tmux-opener-statusline.sh and the hook
+#   scripts as ~/.claude/hooks/*.sh, with the executable bit set. Don't edit the
+#   installed copies — they are generated from claude/ in the repository; edit
+#   there and install again.
 #
 #   Then register it in ~/.claude/settings.json:
-#        "statusLine": { "type": "command", "command": "~/.claude/statusline.sh",
+#        "statusLine": { "type": "command",
+#                        "command": "~/.claude/tmux-opener-statusline.sh",
 #                        "refreshInterval": 1 }
 #
-#   The working/idle indicator (below) additionally needs hooks/session-state.sh
-#   wired to two hooks — without them the indicator just shows a neutral ○ and
-#   everything else still works:
+#   The working/idle indicator (below) additionally needs
+#   hooks/tmux-opener-session-state.sh wired to two hooks — without them the
+#   indicator just shows a neutral ○ and everything else still works:
 #        "hooks": {
 #          "UserPromptSubmit": [{ "hooks": [{ "type": "command",
-#            "command": "~/.claude/hooks/session-state.sh running" }] }],
+#            "command": "~/.claude/hooks/tmux-opener-session-state.sh running" }] }],
 #          "Stop": [{ "hooks": [{ "type": "command",
-#            "command": "~/.claude/hooks/session-state.sh stopped" }] }]
+#            "command": "~/.claude/hooks/tmux-opener-session-state.sh stopped" }] }]
 #        }
 #
 # Effect:
@@ -435,8 +436,8 @@ fmt_elapsed() {
   fi
 }
 
-# --- working/idle indicator (needs hooks/session-state.sh; see header) ---
-# Driven by real hook state, not wall-clock: session-state.sh writes
+# --- working/idle indicator (needs hooks/tmux-opener-session-state.sh; see header) ---
+# Driven by real hook state, not wall-clock: tmux-opener-session-state.sh writes
 # {"state":"running"|"stopped"} keyed by session id on UserPromptSubmit / Stop.
 #
 # *Whether* the spinner appears is that hook state; only which frame it is on is
@@ -459,7 +460,7 @@ fmt_elapsed() {
 # refuses to give everywhere else.
 #
 # True idle needs one more condition. "stopped" from the main turn alone is not
-# enough: while any subagent marker (written by subagent-idle-gate.sh) still
+# enough: while any subagent marker (written by tmux-opener-subagent-idle-gate.sh) still
 # stands for this session, Claude is working in the background, so keep showing
 # "working". This is the statusline mirror of the gate's own "defer the idle bell
 # while a subagent runs" rule — both read the same dir, so the indicator and the
@@ -487,8 +488,8 @@ fmt_elapsed() {
 # of the statusline renders unaffected.
 #
 # Both cache paths below are keyed by the *sanitized* session id, the same
-# `tr -c 'A-Za-z0-9_-' '_'` mapping hooks/session-state.sh and
-# hooks/subagent-idle-gate.sh apply on the writing side. Reader and writers must
+# `tr -c 'A-Za-z0-9_-' '_'` mapping hooks/tmux-opener-session-state.sh and
+# hooks/tmux-opener-subagent-idle-gate.sh apply on the writing side. Reader and writers must
 # agree byte for byte or the indicator silently stops finding its state file, so
 # the two sides are only ever changed together. For a real session id (a CLI-
 # generated UUID) the mapping is the identity, so it also costs no compatibility.
@@ -594,7 +595,7 @@ esac
 # (U+1F39A), STOPWATCH (U+23F1), KEYBOARD (U+2328) and LABEL (U+1F3F7), each via a
 # trailing VS16; and ADULT+ZWJ+COMPUTER (U+1F9D1 U+200D U+1F4BB) — were replaced in
 # #125; keep new markers in the SAFE set.
-# test/statusline.test.js (describe 'claude/statusline.sh emoji width') guards this
+# test/statusline.test.js (describe 'claude/tmux-opener-statusline.sh emoji width') guards this
 # by asserting the file carries no U+FE0F and no U+200D at all — which is why this
 # comment names them positionally (U+FE0F / U+200D) rather than pasting the literal
 # bytes.

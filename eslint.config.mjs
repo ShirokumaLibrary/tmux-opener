@@ -51,6 +51,7 @@ const lintTargets = [
   'media/webview-terminal.js',
   'media/webview-keymap.js',
   'media/webview-sound.js',
+  'media/webview-font.js',
   'test/**/*.js',
   'scripts/**/*.js',
 ];
@@ -123,7 +124,12 @@ export default tseslint.config(
     // reference in webview-terminal.js (a bare webview script) is still caught
     // by no-undef.
     name: 'media/webview',
-    files: ['media/webview-terminal.js', 'media/webview-keymap.js', 'media/webview-sound.js'],
+    files: [
+      'media/webview-terminal.js',
+      'media/webview-keymap.js',
+      'media/webview-sound.js',
+      'media/webview-font.js',
+    ],
     extends: [js.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,
@@ -131,11 +137,12 @@ export default tseslint.config(
       globals: {
         ...globals.browser,
         acquireVsCodeApi: 'readonly',
-        // The UMD guards in webview-keymap.js / webview-sound.js expose
-        // window.TmuxKeymap / window.TmuxSound, which webview-terminal.js
-        // consumes.
+        // The UMD guards in webview-keymap.js / webview-sound.js / webview-font.js
+        // expose window.TmuxKeymap / window.TmuxSound / window.TmuxFont, which
+        // webview-terminal.js consumes.
         TmuxKeymap: 'readonly',
         TmuxSound: 'readonly',
+        TmuxFont: 'readonly',
         // xterm.js + addon UMD globals loaded from media/xterm/ before these run.
         Terminal: 'readonly',
         FitAddon: 'readonly',
@@ -156,7 +163,7 @@ export default tseslint.config(
     // tests. Only they may reference `module`; `exports` is never touched (the
     // guard writes module.exports), so it is not declared.
     name: 'media/webview-umd',
-    files: ['media/webview-keymap.js', 'media/webview-sound.js'],
+    files: ['media/webview-keymap.js', 'media/webview-sound.js', 'media/webview-font.js'],
     languageOptions: {
       globals: {
         module: 'readonly',

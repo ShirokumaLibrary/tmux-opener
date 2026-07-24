@@ -14,12 +14,12 @@
 # ~/.claude/hooks/ on install, so the adjacency holds by construction.
 #
 # Usage: register in ~/.claude/settings.json, passing the event kind as $1:
-#   PreToolUse (matcher "Agent") -> subagent-idle-gate.sh pending (an Agent-tool
+#   PreToolUse (matcher "Agent") -> tmux-opener-subagent-idle-gate.sh pending (an Agent-tool
 #                                    call is about to launch a subagent)
-#   SubagentStart    -> subagent-idle-gate.sh start       (a subagent began)
-#   SubagentStop     -> subagent-idle-gate.sh stop        (a subagent finished)
-#   Stop             -> subagent-idle-gate.sh main-stop   (the main turn stopped)
-#   UserPromptSubmit -> subagent-idle-gate.sh reset       (a new turn started)
+#   SubagentStart    -> tmux-opener-subagent-idle-gate.sh start     (a subagent began)
+#   SubagentStop     -> tmux-opener-subagent-idle-gate.sh stop      (a subagent finished)
+#   Stop             -> tmux-opener-subagent-idle-gate.sh main-stop (the main turn stopped)
+#   UserPromptSubmit -> tmux-opener-subagent-idle-gate.sh reset     (a new turn started)
 #
 # ============================================================================
 # The activation model (why liveness is OBSERVED, not inferred from age)
@@ -156,10 +156,10 @@ safe_agent="$(sanitize "$agent_id")"
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-opener"
 dir="$cache/subagents-$safe_session"            # marker set: one file per running subagent
-# Quarantine is a SIBLING dir, deliberately not a child of "$dir": statusline.sh
+# Quarantine is a SIBLING dir, deliberately not a child of "$dir": tmux-opener-statusline.sh
 # counts entries in the exact path subagents-<sid>/ (not a glob), so a sibling
 # stays outside its count and the badge/bell invariant follows with no change to
-# statusline.sh (design #79 D7). Swept markers move here instead of being
+# tmux-opener-statusline.sh (design #79 D7). Swept markers move here instead of being
 # deleted, so a mis-sweep self-heals (see the activation-model header).
 qdir="$cache/subagents-$safe_session-quarantine"
 emit_marker="$cache/idle-emitted-$safe_session"  # mtime of the last idle fire (cooldown)

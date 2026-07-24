@@ -45,6 +45,7 @@ const DEV_ONLY_PREFIXES = [
   'extension/.github/',
   'extension/infra/',
   'extension/.vscode/',
+  'extension/font-packages/', // sibling font extensions, each packaged as its own VSIX
 ];
 const DEV_ONLY_FILES = ['extension/CLAUDE.md'];
 

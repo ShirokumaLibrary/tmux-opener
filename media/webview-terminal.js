@@ -77,7 +77,69 @@
   let searchAddon;
   let debouncedFit;
   let ready = false;
+  // Guards the deferred first init (below). Terminal construction now awaits
+  // `resolveFontForMeasure` before it runs, so `ready` stays false across that
+  // await — a second `config` arriving in the gap would otherwise match the
+  // `!ready` branch and start a *second* init. `initStarted` flips the instant
+  // the first init is scheduled, so only one ever runs; the second config still
+  // applies its notify-sound state, it just doesn't re-init.
+  let initStarted = false;
   const pending = [];
+
+  // Monotonic request token for the runtime font swap (`applyFontConfig`). Its
+  // `await resolveFontForMeasure` can run up to FONT_LOAD_TIMEOUT_MS, so two
+  // `config` messages arriving close together can finish out of order: a switch
+  // TO the bundled font awaits while a following switch to an OS font resolves
+  // synchronously and applies first, then the bundled resolution lands and
+  // overwrites it — completion order winning over arrival order, leaving the
+  // stale font. Each call takes the next token and discards its result if a
+  // newer call has since started, so only the latest request ever applies.
+  let fontConfigGeneration = 0;
+
+  // How long to wait for the bundled font's `document.fonts.load` before giving
+  // up and measuring against the OS fallback instead. The vendored TTF is ~3.9MB
+  // (full CJK glyph set, #174); a local read of it is ~1ms on this machine, and
+  // the in-browser parse adds tens of ms more, so 1500ms is generous for the
+  // common (local) case. It is deliberately conservative for the slow case: under
+  // Remote-SSH the webview is local but this resource is served from the remote
+  // host across the channel (ADR #34), and it may queue behind pty output. The
+  // error is asymmetric and both sides are benign — too short falls back to the
+  // OS font for that measure (no drift: xterm is handed the fallback family, not
+  // a half-loaded bundled one), too long only delays the first paint by the
+  // timeout. This is a reasoned value, not a measured one: the Bash tool has no
+  // browser/DevTools to time `document.fonts.load`, so the human verification
+  // step (#175 acceptance criteria) is what confirms it on a real webview — same
+  // "choose a conservative value and record why" discipline as RESUME_GRACE_MS.
+  const FONT_LOAD_TIMEOUT_MS = 1500;
+
+  /**
+   * Resolve the fontFamily to actually hand xterm for measurement. For an
+   * OS/editor-default family this is a synchronous pass-through. For the bundled
+   * family (`TmuxFont.usesBundledFont`) it awaits `document.fonts.load` — bounded
+   * by `FONT_LOAD_TIMEOUT_MS` — and returns the bundled family only when
+   * `document.fonts.check` then confirms the face is available; on timeout or
+   * failure it returns `DEFAULT_FONT_FAMILY` so the terminal is built/reconfigured
+   * against a font that is present *now*, never against metrics that change when
+   * the bundled glyphs finish loading (the build-once-at-the-right-metrics
+   * invariant this whole deferral exists to keep).
+   */
+  async function resolveFontForMeasure(fontFamily, fontSize) {
+    const family = fontFamily || DEFAULT_FONT_FAMILY;
+    if (!TmuxFont.usesBundledFont(family)) {
+      return family;
+    }
+    // document.fonts wants a CSS font shorthand: "<size>px <family>".
+    const spec = `${fontSize || 14}px "${TmuxFont.BUNDLED_FAMILY}"`;
+    try {
+      await Promise.race([
+        document.fonts.load(spec),
+        new Promise((resolve) => setTimeout(resolve, FONT_LOAD_TIMEOUT_MS)),
+      ]);
+    } catch {
+      // load() rejects on a bad spec or a fetch failure; the check below decides.
+    }
+    return document.fonts.check(spec) ? family : DEFAULT_FONT_FAMILY;
+  }
 
   function fitAndNotify() {
     try {
@@ -246,8 +308,19 @@
     }
   }
 
-  function applyFontConfig(config) {
-    term.options.fontFamily = config.fontFamily || DEFAULT_FONT_FAMILY;
+  // Runtime font swap (a `config` after the terminal is already built). Awaits
+  // the bundled font the same way the first init does, then swaps xterm's options
+  // and re-measures — so a live switch to the bundled font also fits against the
+  // loaded metrics rather than the OS fallback's.
+  async function applyFontConfig(config) {
+    const generation = ++fontConfigGeneration;
+    const family = await resolveFontForMeasure(config.fontFamily, config.fontSize);
+    // A newer applyFontConfig started while we awaited: its result is the one
+    // the user wants, so drop ours rather than let completion order overwrite it.
+    if (generation !== fontConfigGeneration) {
+      return;
+    }
+    term.options.fontFamily = family;
     term.options.fontSize = config.fontSize || 14;
     fitAndNotify();
   }
@@ -320,6 +393,11 @@
     notFoundOnPath: '"{0}" was not found on PATH',
     notifySoundOn: 'Notification sound: on',
     notifySoundOff: 'Notification sound: off',
+    selectFont: 'Select Font',
+    fontFamilyHeader: 'Font Family',
+    fontSizeHeader: 'Font Size',
+    fontEditorDefault: 'Editor default',
+    fontBundledSuffix: 'font extension',
     updateTool: 'Update {0}',
     restartTool: 'Restart {0}',
   };
@@ -390,6 +468,8 @@
 
   function closeContextMenu() {
     contextMenu.classList.remove('visible');
+    // Stop a later fontOptions re-push from reopening a menu the user dismissed.
+    fontMenuAnchor = null;
   }
 
   function addMenuItem(label, detail, onPick) {
@@ -412,6 +492,49 @@
     contextMenu.appendChild(sep);
   }
 
+  // A non-clickable section header inside the reused #context-menu (#210 font
+  // picker). Keeps the popup a single mechanism rather than a second dropdown.
+  function addMenuHeader(label) {
+    const header = document.createElement('div');
+    header.className = 'menu-header';
+    header.textContent = label;
+    contextMenu.appendChild(header);
+  }
+
+  // A menu row with a leading check gutter for the font picker (#210). The check
+  // codicon renders only when `checked`, so the selected family/size is marked.
+  function addFontMenuItem(label, checked, onPick) {
+    const item = document.createElement('div');
+    item.className = 'menu-item font-item' + (checked ? ' checked' : '');
+    const check = document.createElement('span');
+    check.className = 'check codicon codicon-check';
+    item.appendChild(check);
+    const text = document.createElement('span');
+    text.className = 'label';
+    text.textContent = label;
+    item.appendChild(text);
+    item.addEventListener('click', () => {
+      closeContextMenu();
+      onPick();
+    });
+    contextMenu.appendChild(item);
+  }
+
+  // Anchor-relative placement shared by every #context-menu popup: show first so
+  // it can be measured, then flip to stay inside the view. Right-aligned to the
+  // button because the sidebar hugs the right edge.
+  function positionContextMenu(anchor) {
+    contextMenu.classList.add('visible');
+    const rect = anchor.getBoundingClientRect();
+    const width = contextMenu.offsetWidth;
+    const height = contextMenu.offsetHeight;
+    const left = Math.max(2, Math.min(rect.right - width, window.innerWidth - width - 2));
+    const below = rect.bottom + 2;
+    const top = below + height > window.innerHeight ? Math.max(2, rect.top - height - 2) : below;
+    contextMenu.style.left = `${left}px`;
+    contextMenu.style.top = `${top}px`;
+  }
+
   function openNewSessionMenu(anchor) {
     contextMenu.replaceChildren();
 
@@ -431,17 +554,110 @@
       vscodeApi.postMessage({ type: 'openProfileSettings' }),
     );
 
-    // Show before measuring, then flip to stay inside the view. The menu is
-    // right-aligned to the button because the sidebar hugs the right edge.
-    contextMenu.classList.add('visible');
-    const rect = anchor.getBoundingClientRect();
-    const width = contextMenu.offsetWidth;
-    const height = contextMenu.offsetHeight;
-    const left = Math.max(2, Math.min(rect.right - width, window.innerWidth - width - 2));
-    const below = rect.bottom + 2;
-    const top = below + height > window.innerHeight ? Math.max(2, rect.top - height - 2) : below;
-    contextMenu.style.left = `${left}px`;
-    contextMenu.style.top = `${top}px`;
+    positionContextMenu(anchor);
+  }
+
+  // Latest fontOptions payload from the host (#210, #209 protocol). Null until the
+  // first push lands; the button no-ops (opens an empty-ish menu) only in that
+  // brief pre-push window. `fontMenuAnchor` (and `fontMenuKind`, #222) are
+  // remembered so a re-push (after a selection writes back through config ->
+  // pushFontOptions) can refresh the same filtered menu in place while it is still
+  // open — with the check marks following the new effective font.
+  let fontOptions = null;
+  let fontMenuAnchor = null;
+  let fontMenuKind;
+
+  // Derive a human label for a fontFamily enum value. The payload carries only
+  // `{ value, bundled }`, so the label is the value's primary family token (the
+  // first comma-separated segment, quotes stripped); the empty value is the
+  // editor default. Bundled families are tagged so the user can tell the
+  // font-extension-supplied face apart from an OS one.
+  function fontFamilyLabel(option) {
+    if (option.value === '') {
+      return strings.fontEditorDefault;
+    }
+    const primary = option.value.split(',')[0].replace(/["']/g, '').trim();
+    return option.bundled ? `${primary} (${strings.fontBundledSuffix})` : primary;
+  }
+
+  // Open the reused #context-menu as a font picker. `kind` (#222) narrows it to a
+  // single section: 'family' builds only the Font Family list, 'size' only the
+  // Font Size list. Omitting `kind` (undefined) falls back to building BOTH
+  // sections (with the separator between them) — the pre-#222 behavior — so a
+  // caller that forgets to pass it never gets an empty menu. `addMenuHeader` /
+  // `addFontMenuItem` / the check-mark match / the `size === null` skip are reused
+  // unchanged; only which sections are built (and the remembered `kind`) is new.
+  function openFontMenu(anchor, kind) {
+    contextMenu.replaceChildren();
+    if (!fontOptions) {
+      // No options yet (pre-push). Nothing to show; leave the menu closed and the
+      // anchor unset so a later push can't pop an unprompted menu open.
+      fontMenuAnchor = null;
+      return;
+    }
+    fontMenuAnchor = anchor;
+    fontMenuKind = kind;
+
+    const showFamily = kind === 'family' || kind === undefined;
+    const showSize = kind === 'size' || kind === undefined;
+
+    if (showFamily) {
+      addMenuHeader(strings.fontFamilyHeader);
+      for (const family of fontOptions.families) {
+        const checked = TmuxFont.fontFamilyMatchesCurrent(family.value, fontOptions.currentFamily);
+        addFontMenuItem(fontFamilyLabel(family), checked, () =>
+          vscodeApi.postMessage({ type: 'selectFont', family: family.value }),
+        );
+      }
+    }
+
+    if (showFamily && showSize) {
+      addMenuSeparator();
+    }
+
+    if (showSize) {
+      addMenuHeader(strings.fontSizeHeader);
+      for (const size of fontOptions.sizes) {
+        // The host's selectFont (#209) persists a size only when it is a concrete
+        // number — a `null` (editor-default) selection is a no-op there — so the
+        // null entry is omitted rather than shown as a dead row. Clearing the size
+        // override stays a Settings-UI action. (Family differs: its '' editor-
+        // default DOES persist, so it is offered above.)
+        if (size === null) {
+          continue;
+        }
+        const checked = TmuxFont.fontSizeMatchesCurrent(size, fontOptions.currentSize);
+        addFontMenuItem(String(size), checked, () =>
+          vscodeApi.postMessage({ type: 'selectFont', size }),
+        );
+      }
+    }
+
+    positionContextMenu(anchor);
+  }
+
+  // The always-on font chips on the 2nd toolbar row (#222, plan #221, design #220;
+  // one chip since #217, now split into two). The family chip displays the
+  // effective family (ellipsized, remaining width) and opens the Font Family
+  // section; the size chip displays the effective size (content width) and opens
+  // the Font Size section. updateFontChip refreshes both from the latest
+  // fontOptions payload; the pure composition lives in TmuxFont.fontFamilyChipText /
+  // fontSizeChipText so it is unit-tested without a DOM.
+  const fontChip = document.getElementById('fontChip');
+  const fontChipLabel = document.getElementById('fontChipLabel');
+  const fontSizeChip = document.getElementById('fontSizeChip');
+  const fontSizeChipLabel = document.getElementById('fontSizeChipLabel');
+  function updateFontChip() {
+    if (!fontOptions) {
+      return;
+    }
+    const familyText = TmuxFont.fontFamilyChipText(fontOptions, fontFamilyLabel);
+    fontChipLabel.textContent = familyText;
+    // A long family is ellipsized by CSS; the full text stays reachable on hover,
+    // so the family chip's title is the dynamic full text (its static "Font Family"
+    // affordance is the aria/role). The size chip keeps its static title only.
+    fontChip.title = familyText;
+    fontSizeChipLabel.textContent = TmuxFont.fontSizeChipText(fontOptions);
   }
 
   document.getElementById('newSession').addEventListener('click', () => {
@@ -530,6 +746,25 @@
   notifySoundBtn.addEventListener('click', () => {
     closeContextMenu();
     vscodeApi.postMessage({ type: 'toggleNotifySound' });
+  });
+  // The two font chips on the 2nd toolbar row (#222; one chip since #217). Each
+  // reuses the #context-menu popup (no new dropdown DOM) to list only its own
+  // section from the host's `fontOptions` (#209): the family chip opens the Font
+  // Family list ('family'), the size chip opens the Font Size list ('size'), both
+  // via openFontMenu. Each toggles like the profile split-button's chevron.
+  fontChip.addEventListener('click', (e) => {
+    if (contextMenu.classList.contains('visible')) {
+      closeContextMenu();
+    } else {
+      openFontMenu(e.currentTarget, 'family');
+    }
+  });
+  fontSizeChip.addEventListener('click', (e) => {
+    if (contextMenu.classList.contains('visible')) {
+      closeContextMenu();
+    } else {
+      openFontMenu(e.currentTarget, 'size');
+    }
   });
   window.addEventListener('mousedown', (e) => {
     if (!contextMenu.contains(e.target)) {
@@ -1129,6 +1364,29 @@
       closeContextMenu();
       return;
     }
+    if (msg.type === 'fontOptions') {
+      // Host's font picker choices (#210, #209 protocol). Doesn't touch the
+      // terminal, so it's safe before init completes. Pass only the fields the
+      // picker renders. If the font menu is open (a selection just wrote back and
+      // the host re-pushed), rebuild it in place so the check marks follow.
+      fontOptions = {
+        families: msg.families,
+        sizes: msg.sizes,
+        currentFamily: msg.currentFamily,
+        currentSize: msg.currentSize,
+      };
+      // Refresh the always-on chip's label (#217) on both the first push and the
+      // re-push that follows a selection (config -> pushFontOptions), so the chip
+      // follows the effective font like the menu's check marks do.
+      updateFontChip();
+      if (fontMenuAnchor) {
+        // Rebuild the SAME filtered menu in place (#222): pass the remembered
+        // `fontMenuKind` so a family-only / size-only menu stays that way as its
+        // check marks follow the just-applied selection.
+        openFontMenu(fontMenuAnchor, fontMenuKind);
+      }
+      return;
+    }
     if (msg.type === 'toolActions') {
       // Doesn't touch the terminal — safe before init completes, like `sessions`.
       // Pass only the fields we act on, so `lastToolActions` never carries `type`.
@@ -1151,7 +1409,25 @@
       if (msg.notifySound !== undefined) {
         applyNotifySoundState(msg.notifySound);
       }
-      initTerminal(msg);
+      // Defer construction until the chosen font is loadable, so the first cell
+      // measurement uses the real font (see resolveFontForMeasure). `initStarted`
+      // makes this fire exactly once even if a second config lands during the
+      // await; other pre-ready messages keep flowing into `pending` as before.
+      if (!initStarted) {
+        initStarted = true;
+        resolveFontForMeasure(msg.fontFamily, msg.fontSize)
+          .then((family) => {
+            initTerminal({ ...msg, fontFamily: family });
+          })
+          // `initStarted` is already latched with no retry path, so a rejection
+          // (e.g. `document.fonts.check` throwing where `document.fonts` is
+          // absent — the one line outside resolveFontForMeasure's try) would
+          // leave the terminal permanently unbuilt. Fail safe: build it against
+          // the raw config font, which is present now, rather than not at all.
+          .catch(() => {
+            initTerminal(msg);
+          });
+      }
       return;
     }
     if (!ready) {

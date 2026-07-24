@@ -153,7 +153,7 @@ describe('install-claude.sh: the settings snippet it prints', () => {
     assert.deepStrictEqual(bellEvents, ['Notification']);
 
     const stop = commands.filter(([e]) => e === 'Stop').map(([, c]) => c);
-    assert.ok(stop.some((c) => c.endsWith('subagent-idle-gate.sh main-stop')),
+    assert.ok(stop.some((c) => c.endsWith('tmux-opener-subagent-idle-gate.sh main-stop')),
       'Stop must call the gate');
     assert.ok(!stop.some((c) => c.includes('tmux-opener-bell.sh')),
       'Stop must NOT call the bell directly — the gate owns that decision');
