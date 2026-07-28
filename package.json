@@ -3,7 +3,7 @@
   "displayName": "Tmux Opener",
   "description": "%extension.description%",
   "l10n": "./l10n",
-  "version": "0.0.9",
+  "version": "0.1.0",
   "publisher": "shirokuma-library",
   "license": "MIT",
   "repository": {
@@ -211,7 +211,11 @@
           "default": "",
           "enum": [
             "",
-            "\"M PLUS 1 Code\", monospace",
+            "\"M PLUS 1 Code Term\", monospace",
+            "\"Mgen+ 1mn Term\", monospace",
+            "\"Rounded Mgen+ 1mn Term\", monospace",
+            "\"PlemolJP Console HS\", monospace",
+            "\"ShirokumaGen Term\", monospace",
             "Menlo, monospace",
             "Monaco, monospace",
             "Consolas, monospace",
@@ -227,7 +231,11 @@
           ],
           "enumItemLabels": [
             "%config.terminal.fontFamily.editorDefaultLabel%",
-            "M PLUS 1 Code (font extension)",
+            "M PLUS 1 Code Term (font extension)",
+            "Mgen+ 1mn Term (font extension)",
+            "Rounded Mgen+ 1mn Term (font extension)",
+            "PlemolJP Console HS (font extension)",
+            "ShirokumaGen Term (font extension)",
             "Menlo",
             "Monaco",
             "Consolas",
@@ -243,9 +251,42 @@
           ],
           "enumDescriptions": [
             "%config.terminal.fontFamily.editorDefault%",
-            "%config.terminal.fontFamily.bundled%"
+            "%config.terminal.fontFamily.bundled%",
+            "%config.terminal.fontFamily.mgenplus1mn%",
+            "%config.terminal.fontFamily.roundedMgenplus1mn%",
+            "%config.terminal.fontFamily.plemoljpConsoleHs%",
+            "%config.terminal.fontFamily.shirokumagenTerm%"
           ],
           "description": "%config.terminal.fontFamily%"
+        },
+        "tmuxOpener.terminal.fontFallback": {
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "M PLUS 1 Code Term",
+            "Mgen+ 1mn Term",
+            "Rounded Mgen+ 1mn Term",
+            "PlemolJP Console HS",
+            "ShirokumaGen Term"
+          ],
+          "enumItemLabels": [
+            "%config.terminal.fontFallback.noneLabel%",
+            "M PLUS 1 Code Term (font extension)",
+            "Mgen+ 1mn Term (font extension)",
+            "Rounded Mgen+ 1mn Term (font extension)",
+            "PlemolJP Console HS (font extension)",
+            "ShirokumaGen Term (font extension)"
+          ],
+          "enumDescriptions": [
+            "%config.terminal.fontFallback.none%",
+            "%config.terminal.fontFallback.bundledFace%",
+            "%config.terminal.fontFallback.bundledFace%",
+            "%config.terminal.fontFallback.bundledFace%",
+            "%config.terminal.fontFallback.bundledFace%",
+            "%config.terminal.fontFallback.bundledFace%"
+          ],
+          "description": "%config.terminal.fontFallback%"
         },
         "tmuxOpener.terminal.fontSize": {
           "type": [

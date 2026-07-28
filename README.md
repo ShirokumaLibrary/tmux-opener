@@ -586,6 +586,7 @@ This is setup C, and it has two sources to shut off, not one:
 | Setting | Description |
 | --- | --- |
 | `tmuxOpener.terminal.fontFamily` | Terminal font. Follows `editor.fontFamily` when empty. |
+| `tmuxOpener.terminal.fontFallback` | Second font family, used only for characters the terminal font has no glyph for. Empty (the default) means none, and nothing changes. |
 | `tmuxOpener.terminal.fontSize` | Terminal font size. Follows `editor.fontSize` when unset. |
 | `tmuxOpener.profiles` | Commands offered by the `⌄` dropdown. |
 | `tmuxOpener.notifyOnBell` | Notify when a session rings the terminal bell. On by default. |

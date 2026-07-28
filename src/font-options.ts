@@ -36,12 +36,31 @@ export interface FontOptionsPayload {
  * Build the fontOptions payload from the package.json enums, the registered
  * bundled family names, and an availability predicate.
  *
- * The enum ships bundled families as a CSS stack (`"M PLUS 1 Code", monospace`),
+ * The enum ships bundled families as a CSS stack (`"M PLUS 1 Code Term", monospace`),
  * so a family counts as bundled when a registered family name appears anywhere in
  * the enum value — the same substring rule as `isBundledFamilySelected`. Only
  * bundled families the predicate reports available survive; non-bundled families
  * (and the empty editor-default entry) always do. `isFamilyAvailable` is called
  * only for a bundled family — a plain family has no source to check.
+ *
+ * Candidates are tried **longest name first** (#233, design #229 decision R5),
+ * mirroring font-registry's `matchRegisteredFamily` — which this cannot import
+ * (see the self-containment note at the top of the file), so the ordering rule is
+ * duplicated here and tested on both sides. It matters because `Mgen+ 1mn Term` is
+ * a substring of `Rounded Mgen+ 1mn Term`: in registry order the Rounded enum entry
+ * would match Mgen+ and have its inclusion decided by the *Mgen+* extension's presence.
+ * This is the THIRD copy of that rule (`matchRegisteredFamily` and the webview's
+ * `bundledFamilyOf` are the others).
+ *
+ * CONTRACT: `registeredFamilies` receives **canonical family names only** — never
+ * the aliases a registry entry may declare (#274, design #271 R3). This function
+ * scans the settings `enum`, and only canonical names appear there: an alias is a
+ * FORMER family name kept alive for hand-written settings values, not an offered
+ * option. Passing the aliases in would add candidates that match nothing in the
+ * enum, so it would not change the payload — it would only make this look like an
+ * alias-aware matcher, and the next reader would have to work out that it isn't.
+ * `src/extension.ts` wires this with `FONT_REGISTRY.map(e => e.family)`; keep it
+ * that way.
  */
 export function buildFontOptions(
   fontFamilyEnum: ReadonlyArray<string>,
@@ -52,8 +71,9 @@ export function buildFontOptions(
   isFamilyAvailable: (family: string) => boolean,
 ): FontOptionsPayload {
   const families: FontFamilyOption[] = [];
+  const byLongestName = [...registeredFamilies].sort((a, b) => b.length - a.length);
   for (const value of fontFamilyEnum) {
-    const registered = registeredFamilies.find((family) => value.includes(family));
+    const registered = byLongestName.find((family) => value.includes(family));
     if (registered === undefined) {
       families.push({ value, bundled: false });
       continue;

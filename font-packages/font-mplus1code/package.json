@@ -1,8 +1,8 @@
 {
   "name": "font-mplus1code",
-  "displayName": "M PLUS 1 Code (font resource for extensions)",
-  "description": "Supplies the M PLUS 1 Code font to extensions that borrow a bundled monospace face. It is a resource for extension developers, not a font selectable from ordinary settings such as editor.fontFamily.",
-  "version": "0.0.1",
+  "displayName": "M PLUS 1 Code Term (font resource for extensions)",
+  "description": "Supplies the M PLUS 1 Code Term font — M PLUS 1 Code instanced to static 400/700 faces and refitted so that no symbol a terminal draws one cell wide is ever squashed sideways: ink wider than 1.15 cells is scaled down to that width and a refitted glyph's height is scaled by up to 1.3 times its width factor — capped, per glyph, so the stretch never carries it past the top or bottom edge of the face's own 漢, which means the refit pushes nothing past that kanji and leaves a glyph that was already past it untouched (measured: 0 glyphs newly outside; 19 of the 46 refitted glyphs in the regular face grew taller, 25 of 67 in the bold, the rest had no room left; and 27 of the regular face's were outside the kanji's box to begin with, so this is not a claim that nothing reaches further than 漢), ink reaching past its cell is centred so the overhang is symmetric and at most about 7.6% of a cell per side (measured; the ratio alone puts it at 7.5% and integer rounding on this typeface's 500-unit cell accounts for the rest), and the cell grid is unchanged — in this typeface the refit changes no advance at all (measured: 0 glyphs of 6747 per face), because upstream already draws these symbols one column wide, so only ink moves (ASCII and Latin-1 left as the typeface designed them) — to extensions that borrow a bundled monospace face. It is a resource for extension developers, not a font selectable from ordinary settings such as editor.fontFamily.",
+  "version": "0.2.0",
   "publisher": "shirokuma-library",
   "license": "OFL-1.1",
   "icon": "icon.png",
@@ -21,9 +21,19 @@
   "activationEvents": [],
   "contributes": {},
   "providedFont": {
-    "family": "M PLUS 1 Code",
-    "file": "fonts/MPLUS1Code.ttf",
-    "weight": "100 700",
+    "family": "M PLUS 1 Code Term",
+    "file": "fonts/MPLUS1CodeTerm-Regular.ttf",
+    "weight": "400",
+    "faces": [
+      {
+        "file": "fonts/MPLUS1CodeTerm-Regular.ttf",
+        "weight": "400"
+      },
+      {
+        "file": "fonts/MPLUS1CodeTerm-Bold.ttf",
+        "weight": "700"
+      }
+    ],
     "license": "OFL-1.1"
   }
 }

@@ -1,0 +1,173 @@
+{
+  "note": [
+    "変換ジョブの正本（設計 #271 R5）。フォントを 1 つ足すことは packages に 1 エントリ",
+    "足すことと同義で、run.sh / fit.py / verify.py はどの書体名も知らない。",
+    "このファイルは『どのパッケージが変換出力か』の正本でもある——ここに載らない",
+    "パッケージ（font-plemoljp-console）は非改変で、来歴は従来の二列 sha256 規約のまま。",
+    "srcEntry は --src-dir からの相対パス（展開済み上流のエントリ）。srcSha256 は",
+    "run.sh が変換前に全 face を一括照合する（取り違えは 1 バイトも書く前に落ちる）。",
+    "out は package からの相対パス。package / srcEntry / out は絶対パスと .. を禁じる。",
+    "instanceWght を持つ face だけが instance.py による静的化を先に通る。",
+    "upstream.url / upstream.archiveSha256 は null を取りうる（上流 archive の来歴が",
+    "そもそも記録されていないパッケージ）。null のときは unrecorded に理由を必ず書き、",
+    "推測値では埋めない。下流（#276 の検査）はこの 3 キーの組み合わせを規則として",
+    "扱ってよい。faces[].weight は run.sh が読まない——#276 が providedFont の face",
+    "宣言と突き合わせるための記録。",
+    "",
+    "fitRatio（#291・この 3 段落がこの値の意味・上限・既定の正本。fit.py / verify.py /",
+    "run.sh / 各 README はここを参照し、意味を書き直さない）:",
+    "  room = A * fitRatio（A = セル幅 = 'A' の advance）。ink 幅が room を超えるグリフ",
+    "  だけを、ink 幅ちょうど room まで横倍率 s で縮め、セルの中央へ置く（縦倍率は",
+    "  s * vstretch——下の vstretch の段落）。room 以下のグリフは縮めない。",
+    "  **advance は常に A のまま**なので、ターミナルの升目は fitRatio を",
+    "  変えても一切動かない。動くのは ink だけで、fitRatio > 1 のときのはみ出しは中央寄せ",
+    "  により左右対称に ±(ink - A)/2 になる。",
+    "  上限 1.5 は好みではなく機構上の壁: xterm の allowRescaling は",
+    "  glyphWidth > ceil(1.5 * cellWidth) で**横だけ**縮める（＝潰れる）。これはこの変換が",
+    "  存在する理由そのものなので、fit.py は fitRatio > 1.5 と <= 0 を 1 バイトも書く前に",
+    "  拒否する。ただし 1.5 ちょうどが安全という意味ではない——判定はラスタライズ後の",
+    "  デバイスピクセルでアンチエイリアスのにじみを含むため、実用上の推奨は <= 1.3。",
+    "  既定は下のトップレベル fitRatio（現在 1.15）。face ではなく package 単位で上書き",
+    "  できる（packages[].fitRatio）。将来フォントごとの縦横比を見て個別調整しうる形を",
+    "  用意してあるが、現在はどのパッケージも上書きしていない＝全 8 面が既定値。",
+    "  1 回限りの試行は run.sh --fit-ratio（--out-dir 必須。既定 out-dir に宣言と違う",
+    "  倍率の TTF を置かせないため）。",
+    "",
+    "vstretch（#293・この 4 段落がこの値の意味・上限・既定の正本。fit.py / verify.py /",
+    "run.sh / 各 README はここを参照し、意味を書き直さない）:",
+    "  縦倍率を s * vstretch にする（s = fitRatio から決まる横倍率。**横倍率 s も、",
+    "  対象グリフの選び方も、advance も vstretch では一切動かない**——動くのは縦だけ）。",
+    "  縦の中心は保存する。vstretch = 1.0 は #291 までの等倍と**恒等**（出力バイト列が",
+    "  一致する）で、これが比較の基準線になる。",
+    "  なぜ縦なのか: ink 幅を room まで詰めると、等倍では高さも同率で失う。Mgen+ 1mn",
+    "  Regular の実測で ① は 928x928 -> 588x588 になり、記号が大文字 A（748）より低い。",
+    "  横はもう伸ばせない（既に A を超えている）ので、余地は縦だけ。",
+    "  壁は好みではなく**そのフォントから実測する値**: 参照グリフ 漢 (U+6F22) の ink の",
+    "  **上端と下端**（Mgen+ 1mn Regular なら y = -78..843）。伸長後の上端・下端が",
+    "  その内側にとどまるよう、**伸長係数の側**を clamp する（下限 1.0＝等倍より縮めない）。",
+    "  **縛るのは ink の高さではなく行の上下への到達**である（#293 レビュー High-1）——",
+    "  この変換は縦の中心を保存するので、高さだけを抑えても、中心が漢とずれたグリフは",
+    "  伸長ぶんだけ行の外へ出る。実測でそうなっていた（clamp が発火しないまま下端が",
+    "  32 ユニット深くなる例・clamp が発火しても上端が 26 ユニット上がる例）。",
+    "  この参照グリフを持たないフォントは壁を実測できないので、fit.py が 1 バイトも",
+    "  書く前に変換を拒否する（推測値で代替しない）。",
+    "  **ここで真になる言明は条件つきであって全称ではない**: 『この変換はグリフを漢の",
+    "  y 範囲より外へ出さない。等倍の時点で既に外にいるグリフは #291 のまま 1 ユニットも",
+    "  動かない』。上流の書体には元から漢より高く/深く届く記号があり（Mgen+ 1mn Regular",
+    "  では変換対象 1001 個のうち 141 個が等倍の時点で既に外・実測）、それらは変換後も",
+    "  そのままである。『漢が既に持っている以上には食い込まない』という無条件の全称文は",
+    "  それらに対して偽になるので書かない。",
+    "  clamp の下限が 1.0 であることの帰結として、**選ばれたグリフが必ず縦に伸びるわけ",
+    "  ではない**: 等倍の時点で既に壁に届いている（または外にいる）グリフは 1 ユニットも",
+    "  動かない。",
+    "  既定は下のトップレベル vstretch（現在 1.3）。**1.3 は選んだ値であって導出した値",
+    "  ではない**——5 段階（1.0 / 1.2 / 1.3 / 1.4 / 上限）を焼いて人が見て決めた。近くに",
+    "  測れる基準（cap height 748 / 記号幅 588 = 1.272）はあるが、そこから導いてはいない。",
+    "  face ではなく package 単位で上書きできる（packages[].vstretch）。現在はどの",
+    "  パッケージも上書きしていない＝全 8 面が既定値。1 回限りの試行は run.sh",
+    "  --vstretch（--out-dir 必須。理由は --fit-ratio と同一）。"
+  ],
+  "fitRatio": 1.15,
+  "vstretch": 1.3,
+  "packages": [
+    {
+      "package": "font-packages/font-mgenplus-1mn",
+      "family": "Mgen+ 1mn Term",
+      "upstream": {
+        "url": "https://ftp.iij.ad.jp/pub/osdn.jp/users/8/8592/mgenplus-1m-20150602.zip",
+        "archiveSha256": "fae75318098697f165d74c5c4297805dfcfa335e09b0c31175ed299663c4c009"
+      },
+      "faces": [
+        {
+          "srcEntry": "mgenplus-1mn-regular.ttf",
+          "srcSha256": "52098e94e7e3673ea1457179d9841754ce07044868d146ecacf606464e8486f3",
+          "out": "fonts/MgenPlus1mnTerm-Regular.ttf",
+          "style": "Regular",
+          "weight": "400"
+        },
+        {
+          "srcEntry": "mgenplus-1mn-bold.ttf",
+          "srcSha256": "1d720fb23c0362240836547ef8ebe889db8234cee4c432568f568af5c8c4af97",
+          "out": "fonts/MgenPlus1mnTerm-Bold.ttf",
+          "style": "Bold",
+          "weight": "700"
+        }
+      ]
+    },
+    {
+      "package": "font-packages/font-rounded-mgenplus-1mn",
+      "family": "Rounded Mgen+ 1mn Term",
+      "upstream": {
+        "url": "https://ftp.iij.ad.jp/pub/osdn.jp/users/8/8598/rounded-mgenplus-20150602.7z",
+        "archiveSha256": "ecea6764973d93936238f1c06ed246310bec320f63f350c2bdb7e8d1feee25cc"
+      },
+      "faces": [
+        {
+          "srcEntry": "rounded-mgenplus-1mn-regular.ttf",
+          "srcSha256": "310277eac41dcf5aacd84e52d55237d505a0996cb2163f811268aa3eae646f06",
+          "out": "fonts/RoundedMgenPlus1mnTerm-Regular.ttf",
+          "style": "Regular",
+          "weight": "400"
+        },
+        {
+          "srcEntry": "rounded-mgenplus-1mn-bold.ttf",
+          "srcSha256": "8f9808dababcd01a71bdb3b742260c629af00be2ddcfaa5e03bf3194402a3603",
+          "out": "fonts/RoundedMgenPlus1mnTerm-Bold.ttf",
+          "style": "Bold",
+          "weight": "700"
+        }
+      ]
+    },
+    {
+      "package": "font-packages/font-mplus1code",
+      "family": "M PLUS 1 Code Term",
+      "upstream": {
+        "url": null,
+        "archiveSha256": null,
+        "unrecorded": "このパッケージの README には上流 archive の URL / sha256 が記録されていない（#174 で同梱された当時、二列 sha256 規約より前）。srcSha256 は同梱済み無改変 TTF から実測した値で、上流 archive 側の 2 値は再取得時に人が実測して埋める（推測値を書かない）。"
+      },
+      "faces": [
+        {
+          "srcEntry": "MPLUS1Code.ttf",
+          "srcSha256": "ff68678c5bd7e9d9d6ab6d57e4355aabe30f6b8f8bff9bd59baf6a7807dcfd36",
+          "instanceWght": 400,
+          "out": "fonts/MPLUS1CodeTerm-Regular.ttf",
+          "style": "Regular",
+          "weight": "400"
+        },
+        {
+          "srcEntry": "MPLUS1Code.ttf",
+          "srcSha256": "ff68678c5bd7e9d9d6ab6d57e4355aabe30f6b8f8bff9bd59baf6a7807dcfd36",
+          "instanceWght": 700,
+          "out": "fonts/MPLUS1CodeTerm-Bold.ttf",
+          "style": "Bold",
+          "weight": "700"
+        }
+      ]
+    },
+    {
+      "package": "font-packages/font-shirokumagen",
+      "family": "ShirokumaGen Term",
+      "upstream": {
+        "url": "https://github.com/yuru7/HackGen/releases/download/v2.10.0/HackGen_v2.10.0.zip",
+        "archiveSha256": "ed182e2a4b95792d94dea7932f6b45280b5ae353651be249d5f6b7867b788db7"
+      },
+      "faces": [
+        {
+          "srcEntry": "HackGenConsole-Regular.ttf",
+          "srcSha256": "72f550f90b49be633a9661f153b8c8398272785d9beda53dd5c400b61412a3ec",
+          "out": "fonts/ShirokumaGenTerm-Regular.ttf",
+          "style": "Regular",
+          "weight": "400"
+        },
+        {
+          "srcEntry": "HackGenConsole-Bold.ttf",
+          "srcSha256": "268a3fb847765aa12779e6021329e5aa33a45a6cb4c98ed0d40ee9d201d5d84a",
+          "out": "fonts/ShirokumaGenTerm-Bold.ttf",
+          "style": "Bold",
+          "weight": "700"
+        }
+      ]
+    }
+  ]
+}

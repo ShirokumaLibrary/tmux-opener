@@ -1,0 +1,39 @@
+{
+  "name": "font-shirokumagen",
+  "displayName": "ShirokumaGen Term (font resource for extensions)",
+  "description": "Supplies the ShirokumaGen Term font — HackGen Console refitted so that no symbol a terminal draws one cell wide is ever squashed sideways: a width-1 code point upstream drew on the full-width advance 1080 now advances exactly one 540-unit cell (measured: 1656 glyphs of the regular face, 1621 of the bold), ink wider than 1.15 cells is scaled down to that width, and a refitted glyph's height is scaled by up to 1.3 times its width factor — capped, per glyph, so the stretch never carries it past the top or bottom edge of the face's own 漢, which means the refit pushes nothing past that kanji and leaves a glyph that was already past it with the shape equal scaling gives it (measured: 0 glyphs newly outside; 1128 of the 1723 refitted glyphs in the regular face grew taller, 1115 of 1694 in the bold, the rest had no room left; and 593 of the regular face's were outside the kanji's box to begin with, so this is not a claim that nothing reaches further than 漢 — and that is a statement about the vertical factor, not about the bytes: all 593 are refit targets, 573 of them had their advance set to the cell, and only 8 are unchanged to the unit against upstream), ink reaching past its cell is centred so the overhang is symmetric and at most about 7.6% of a cell per side (measured; the ratio alone puts it at 7.5% and integer rounding on this typeface's 540-unit cell accounts for the rest), and the cell grid is unchanged — A stays 540, a full-width glyph stays 1080, and body glyphs keep both outline and advance (measured: 0 outline changes among 13,101 per face; ASCII and Latin-1 left as the typeface designed them) — to extensions that borrow a bundled monospace face. It is a resource for extension developers, not a font selectable from ordinary settings such as editor.fontFamily.",
+  "version": "0.1.0",
+  "publisher": "shirokuma-library",
+  "license": "OFL-1.1",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShirokumaLibrary/tmux-opener.git",
+    "directory": "font-packages/font-shirokumagen"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {},
+  "providedFont": {
+    "family": "ShirokumaGen Term",
+    "file": "fonts/ShirokumaGenTerm-Regular.ttf",
+    "weight": "400",
+    "faces": [
+      {
+        "file": "fonts/ShirokumaGenTerm-Regular.ttf",
+        "weight": "400"
+      },
+      {
+        "file": "fonts/ShirokumaGenTerm-Bold.ttf",
+        "weight": "700"
+      }
+    ],
+    "license": "OFL-1.1"
+  }
+}

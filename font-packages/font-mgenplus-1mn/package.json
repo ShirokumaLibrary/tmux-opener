@@ -1,0 +1,39 @@
+{
+  "name": "font-mgenplus-1mn",
+  "displayName": "Mgen+ 1mn Term (font resource for extensions)",
+  "description": "Supplies the Mgen+ 1mn Term font — Mgen+ 1mn refitted so that no symbol a terminal draws one cell wide is ever squashed sideways: ink wider than 1.15 cells is scaled down to that width and a refitted glyph's height is scaled by up to 1.3 times its width factor — capped, per glyph, so the stretch never carries it past the top or bottom edge of the face's own 漢, which means the refit pushes nothing past that kanji and leaves a glyph that was already past it untouched (measured: 0 glyphs newly outside; 857 of the 1001 refitted glyphs in the regular face grew taller, 899 of 1020 in the bold, the rest had no room left; and 141 of the regular face's were outside the kanji's box to begin with, so this is not a claim that nothing reaches further than 漢), ink reaching past its cell is centred so the overhang is symmetric and at most about 7.5% of a cell per side, and the cell grid is unchanged — one column, and a full-width character, are the same widths as before, while a refitted symbol's own advance is set to one column — for nearly all of them that is a change from full-width (997 of the 1001 refitted glyphs in the regular face, 1016 of 1020 in the bold, measured), and the rest were already one column wide, so only their ink moves; ASCII and Latin-1 are left as the typeface designed them — to extensions that borrow a bundled monospace face. It is a resource for extension developers, not a font selectable from ordinary settings such as editor.fontFamily.",
+  "version": "0.2.0",
+  "publisher": "shirokuma-library",
+  "license": "OFL-1.1",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShirokumaLibrary/tmux-opener.git",
+    "directory": "font-packages/font-mgenplus-1mn"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {},
+  "providedFont": {
+    "family": "Mgen+ 1mn Term",
+    "file": "fonts/MgenPlus1mnTerm-Regular.ttf",
+    "weight": "400",
+    "faces": [
+      {
+        "file": "fonts/MgenPlus1mnTerm-Regular.ttf",
+        "weight": "400"
+      },
+      {
+        "file": "fonts/MgenPlus1mnTerm-Bold.ttf",
+        "weight": "700"
+      }
+    ],
+    "license": "OFL-1.1"
+  }
+}

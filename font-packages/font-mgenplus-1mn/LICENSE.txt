@@ -1,0 +1,242 @@
+Mgen+ 1mn Term — copyright and license
+======================================
+
+The font files bundled with this extension are Mgen+ 1mn Term Regular
+(fonts/MgenPlus1mnTerm-Regular.ttf) and Mgen+ 1mn Term Bold
+(fonts/MgenPlus1mnTerm-Bold.ttf). They are MODIFIED VERSIONS, in the sense OFL
+1.1 gives that term, of Mgen+ 1mn Regular and Mgen+ 1mn Bold, made and
+distributed by 自家製フォント工房 (Jikasei Font Studio) under the SIL Open Font
+License, Version 1.1. Both come from the same distribution and were converted by
+the same tool in the same run, and everything stated below covers both of them.
+Mgen+ fills the glyphs M+ OUTLINE FONTS does not cover with glyphs from Source
+Han Sans, so three parties are credited below.
+
+What the modification is, in two tiers. For a code point a terminal counts as
+one column wide: its outline was moved or scaled so that its ink is at most
+1.15 times the cell width and is centred on the cell, AND its advance width was
+set to that cell width -- upstream gave these
+the full-width advance 1024, and 997 of them in the regular face (1016 in the
+bold) are now 512, measured on the shipped files. For every other glyph:
+nothing changed, neither outline nor advance, and the tool verified that glyph
+by glyph. Ink is therefore NOT confined to the cell: a refitted symbol may reach
+up to 38 units of the 512-unit cell (about 7.5%) into each neighbour, equally on
+both sides. That is deliberate -- the symbols read better at this size -- and it
+stays well below the width at which a terminal renderer squashes a glyph
+horizontally, which is what the refit exists to avoid.
+
+The two directions are NOT scaled by the same factor, and this release is where
+that changed. A refitted glyph's height is scaled by up to 1.3 times whatever
+factor its width was scaled by, so a symbol taken down to the cell width is no longer
+taken down to the same height. The stretch is bounded by a value MEASURED from
+these very files rather than chosen: the TOP AND BOTTOM EDGES of their own 漢
+(U+6F22) -- y = -78..843 in the regular face, -95..847 in the bold -- and the
+stretch of each glyph is capped so that the stretched glyph stays inside them.
+The bound is on the glyph's REACH, not on its height: this conversion keeps each
+glyph's vertical centre, so capping the height alone would still let a glyph
+whose centre sits off the kanji's push past the line. What follows is therefore
+a CONDITIONAL statement, and it is the one that is true of these bytes: the
+refit never pushes a glyph past that kanji's top or bottom, and a glyph that was
+already past it at equal scaling keeps the previous release's shape, unchanged
+to the unit (measured on the shipped files: 0 glyphs of either face reach
+outside the kanji's box that did not already). It is NOT true, and is not
+claimed, that nothing in these files reaches further above or below the line
+than the kanji -- this typeface draws symbols taller than 漢 to begin with, and
+in the regular face 141 of the 1001 refitted glyphs are outside its box at equal
+scaling. Because the bound is applied by capping the stretch, and never by
+shrinking, NOT every refitted glyph is taller: measured on the shipped files,
+857 of the 1001 refitted glyphs in the regular face and 899 of 1020 in the bold
+grew, and the remaining 144 and 121 had no room left and did not move at all.
+The value 1.3 was chosen by looking at test conversions, not computed from
+anything.
+
+What did NOT move is the
+cell grid itself -- the ASCII advance is 512 before and after, a full-width glyph
+such as 漢 stays 1024, and every advance in these files is byte-identical to the
+previous release (measured), as it was to the narrower refit before that -- so
+text sets in the same columns as it always did. The vertical change above did not
+touch the horizontal one: the widest refitted ink is still 588 units, exactly
+where the previous release left it (measured). The
+`name` table's family and style records were rewritten to the new name (and
+nameID 3 carries "; derived"); the copyright records were not -- see section 1.
+The conversion is `scripts/font-fit/` in the source repository, and the
+package's README.md records the full chain from upstream archive to output
+sha256, including the measurement behind section 1's claim.
+
+Being a Modified Version, this package is itself distributed under the OFL
+(section 5), and section 3's reserved-name rule applies to it -- see the
+RESERVED FONT NAME note at the end of section 1.
+
+Which source states what is kept separate on purpose: a license file's whole
+value is that its claims can be checked against the primary documents, so a
+paraphrase must not be presented as a quotation.
+
+1. Copyright holders, quoted verbatim
+-------------------------------------
+
+The bundled TTFs' own `name` table, nameID 0 (copyright), reproduced exactly --
+identical in the Macintosh (platform 1, encoding 0, language 0x0) and Windows
+(platform 3, encoding 1, language 0x409) records, and byte-for-byte identical
+between the regular and the bold face (measured: each record hashes the same in
+both files -- the Mac and the Windows record differ from each other, as their
+encodings require -- so this one quotation covers both faces). The conversion
+rewrites the family and style records but CARRIES nameID 0 THROUGH UNCHANGED,
+re-measured on the shipped files, so this is still the machine-readable
+copyright field OFL section 2 speaks of, exactly as upstream wrote it:
+
+    [Source Han Sans]
+    Copyright © 2014, 2015 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'.
+
+    [M+ OUTLINE FONTS]
+    Copyright(c) 2015 M+ FONTS PROJECT
+
+The distribution's own README (fonts/README_MgenPlus.txt, section
+「ライセンスと著作権について」) names the same two holders in Japanese:
+
+    ・フォントデータに含まれる、源ノ角ゴシック由来の文字グリフの著作権は Adobe が所有しています。
+    ・フォントデータに含まれる、M+ OUTLINE FONTS 由来の文字グリフの著作権は M+ FONTS PROJECT が所有しています。
+
+RESERVED FONT NAME: the Adobe line above reserves the name 'Source' (OFL
+section 3). Because the bundled faces ARE a Modified Version, that clause is in
+scope here, and it is satisfied: the name they declare (Mgen+ 1mn Term) contains
+no reserved name. 'Source' is the only reserved font name declared anywhere in
+this package -- measured by searching every license text shipped here for
+"Reserved Font Name": this file (the Adobe line above, and the OFL definition
+clause in the license body below, which names nothing) and
+fonts/SIL_Open_Font_License_1.1.txt (the same definition clause). Neither
+'Mgen+' nor '1mn' nor 'Term' contains it. Anything further derived from this
+font likewise may not be distributed under a name containing 'Source'.
+
+2. The third party: 自家製フォント工房 (Jikasei Font Studio)
+------------------------------------------------------------
+
+Neither the name table nor the README's copyright section carries a verbatim
+copyright line for 自家製フォント工房. It is credited here as the author and
+distributor of the composed font -- the work of selecting, merging and fitting
+the two upstream glyph sets into Mgen+ -- which the distribution states in a
+*separate* section, 「■ 頒布元」 (fonts/README_MgenPlus.txt, line 90):
+
+    自家製フォント工房
+    http://jikasei.me/
+
+Read that as an attribution of authorship and distribution, not as a quoted
+copyright notice.
+
+3. License texts
+----------------
+
+Both faces are licensed under the SIL Open Font License, Version 1.1, whose full
+text follows below, copied verbatim from the distribution archive (also present,
+byte-for-byte, at fonts/SIL_Open_Font_License_1.1.txt). OFL section 5 requires a
+Modified Version to be distributed entirely under this same license, which is
+what this file does. The M+ OUTLINE FONTS
+licenses the upstream glyphs are used under ship at
+fonts/mplus-TESTFLIGHT-059/LICENSE_E and fonts/mplus-TESTFLIGHT-059/LICENSE_J.
+Those three documents, and the distribution's own README shipped at
+fonts/README_MgenPlus.txt, are placed byte-for-byte as distributed -- the
+conversion touched only the two TTFs.
+
+Note this file covers the *font*. It is also this extension's license: the
+extension carries no code beyond a no-op activate/deactivate stub, so there is
+nothing else to license separately.
+
+4. A note on the URLs
+---------------------
+
+The 2015 distribution's 「■ 改変元」 section cites the upstream projects as
+http://mplus-fonts.sourceforge.jp/ (M+ OUTLINE FONTS) and
+http://store1.adobe.com/cfusion/store/html/index.cfm?store=OLS-JP&event=displayFontPackage&code=1967
+(源ノ角ゴシック / Source Han Sans). Where this extension's README links those
+projects it gives current addresses instead, so those links are not quotations
+from the distribution. The verbatim 2015 URLs are the two above.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded, 
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.

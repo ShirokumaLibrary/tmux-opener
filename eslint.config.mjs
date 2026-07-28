@@ -54,6 +54,9 @@ const lintTargets = [
   'media/webview-font.js',
   'test/**/*.js',
   'scripts/**/*.js',
+  // `.mjs` too: scripts/font-fit/dump-widths.mjs would otherwise be a blind spot
+  // in a directory whose .sh/.py files no automatic gate can reach at all.
+  'scripts/**/*.mjs',
 ];
 
 const securityBlock = {

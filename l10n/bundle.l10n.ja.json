@@ -64,7 +64,7 @@
   "Open Instructions": "手順を開く",
   "Don't Show Again": "今後表示しない",
   "Install command copied. Paste it into a tmux terminal and run it.": "インストールコマンドをコピーしました。tmux ターミナルに貼り付けて実行してください。",
-  "Tmux Opener: the M PLUS 1 Code font extension isn't installed, so the terminal is rendering with your OS's default monospace font. To use M PLUS 1 Code, install the dedicated font extension.": "Tmux Opener: M PLUS 1 Code フォント拡張機能がインストールされていないため、ターミナルは OS 標準の monospace フォントで表示しています。M PLUS 1 Code を使うには専用のフォント拡張機能をインストールしてください。",
+  "Tmux Opener: the {0} font extension isn't installed, so the terminal is rendering with your OS's default monospace font. To use {0}, install the dedicated font extension.": "Tmux Opener: {0} フォント拡張機能がインストールされていないため、ターミナルは OS 標準の monospace フォントで表示しています。{0} を使うには専用のフォント拡張機能をインストールしてください。",
   "Find": "検索",
   "Previous match": "前の一致",
   "Next match": "次の一致",

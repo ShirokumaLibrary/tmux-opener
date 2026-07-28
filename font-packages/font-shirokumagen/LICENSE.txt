@@ -1,0 +1,276 @@
+ShirokumaGen Term — copyright and license
+=========================================
+
+The font files bundled with this extension are ShirokumaGen Term Regular
+(fonts/ShirokumaGenTerm-Regular.ttf) and ShirokumaGen Term Bold
+(fonts/ShirokumaGenTerm-Bold.ttf). They are MODIFIED VERSIONS,
+in the sense OFL 1.1 gives that term, of HackGen Console Regular and HackGen
+Console Bold (白源 Console, HackGen v2.10.0), made and distributed by Yuko
+OTAWARA under the SIL Open Font License, Version 1.1. Both come from the same
+distribution archive and were converted by the same tool in the same run, and
+everything stated below covers both of them. HackGen composes Hack with Gen Jyuu
+Gothic (源柔ゴシック), so more than one party is credited below.
+
+What the modification is, in two tiers. For a code point a terminal counts as
+one column wide: its outline was moved or scaled so that its ink is at most
+1.15 times the cell width and is centred on the cell, AND its advance width was
+set to that cell width -- upstream gave these the full-width advance 1080, and
+1656 glyphs in the regular face (1621 in the bold) are now 540, measured on the
+shipped files. For every other glyph: nothing changed, neither outline nor
+advance, and the tool verified that glyph by glyph (13,101 body glyphs per face,
+0 outline changes). Ink is therefore NOT confined to the cell: a refitted symbol
+may reach up to 41 units of the 540-unit cell (about 7.6%) into each neighbour,
+equally on both sides -- the ratio alone puts it at 40.5 and integer rounding on
+this typeface's 540-unit cell accounts for the rest. That is deliberate -- the
+symbols read better at this size -- and it stays well below the width at which a
+terminal renderer squashes a glyph horizontally, which is what the refit exists
+to avoid.
+
+The two directions are NOT scaled by the same factor. A refitted glyph's height
+is scaled by up to 1.3 times whatever factor its width was scaled by, so a symbol
+taken down to the cell width is no longer taken down to the same height. The
+stretch is bounded by a value MEASURED from these very files rather than chosen:
+the TOP AND BOTTOM EDGES of their own 漢 (U+6F22) -- y = -72..856 in the regular
+face, -80..866 in the bold -- and the stretch of each glyph is capped so that the
+stretched glyph stays inside them. The bound is on the glyph's REACH, not on its
+height: this conversion keeps each glyph's vertical centre, so capping the height
+alone would still let a glyph whose centre sits off the kanji's push past the
+line. What follows is therefore a CONDITIONAL statement, and it is the one that
+is true of these bytes: the refit never pushes a glyph past that kanji's top or
+bottom, and a glyph that was already past it at equal scaling keeps the shape
+equal scaling gives it, unchanged to the unit (measured on the shipped files:
+0 glyphs of either face reach outside the kanji's box that did not already; in
+the regular face the count outside even went from 593 at equal scaling to 592 in
+the output). It is NOT true, and is not claimed, that nothing in these files
+reaches further above or below the line than the kanji -- this typeface draws
+symbols taller than 漢 to begin with, and in the regular face 593 of the 1723
+refitted glyphs are outside its box at equal scaling. Because the bound is
+applied by capping the stretch, and never by shrinking, NOT every refitted glyph
+is taller: measured on the shipped files, 1128 of the 1723 refitted glyphs in the
+regular face and 1115 of 1694 in the bold grew, and the remaining 595 and 579 had
+no room left, so their stretch stayed at its floor of 1.0. THAT IS A STATEMENT
+ABOUT THE VERTICAL FACTOR, NOT ABOUT THE BYTES. This package has no earlier
+release to be compared against, so the comparison is with the upstream faces, and
+measured against them -- each glyph compared as a decomposed outline (its point
+sequence once composite glyphs are resolved) together with its advance and side
+bearing, the yardstick README.md names beside the same figure -- only 8 of those
+595 and 11 of those 579 are unchanged to the unit; the rest still moved
+anyway, because the same pass sets a selected
+glyph's advance to A and re-centres what overhangs (133 of the 595 and 152 of the
+579 were scaled down in both directions as well). Not stretched is not unmoved.
+The value 1.3 was chosen by looking at test conversions, not computed from
+anything.
+
+What did NOT move is the cell grid itself -- the ASCII advance is 540 before and
+after, a full-width glyph such as 漢 stays 1080, and gid 0 (named
+.notdef#0#0#0 in these faces) stays 540 --
+so text sets in the same columns as it always did. The `name` table's family and
+style records were rewritten to the new name (and nameID 3 carries "; derived");
+the copyright records were not -- see section 1. In the bold face `head.macStyle`
+bit 0 was set (0x0000 -> 0x0001), which upstream had left clear while its
+`OS/2.fsSelection` already flagged BOLD; that is the style-linking bit, and it is
+the only metadata change beyond the names. The conversion is `scripts/font-fit/`
+in the source repository, and the package's README.md records the full chain from
+upstream archive to output sha256, including the measurements behind the claims
+above.
+
+Being a Modified Version, this package is itself distributed under the OFL
+(section 5), and section 3's reserved-name rule applies to it -- see the
+RESERVED FONT NAME note at the end of section 1.
+
+Which source states what is kept separate on purpose: a license file's whole
+value is that its claims can be checked against the primary documents, so a
+paraphrase must not be presented as a quotation.
+
+1. Copyright holders, quoted verbatim
+-------------------------------------
+
+The bundled TTFs' own `name` table, nameID 0 (copyright), reproduced exactly.
+The conversion rewrites the family and style records but CARRIES nameID 0 THROUGH
+UNCHANGED, re-measured on the shipped files, so this is still the
+machine-readable copyright field OFL section 2 speaks of, exactly as upstream
+wrote it (identical in the regular and the bold face):
+
+    [Hack]
+    Copyright (c) 2018 Source Foundry Authors
+
+    [Gen Jyuu Gothic]
+    Copyright (c) 2015 JIKASEI FONT KOUBOU
+
+    [Nerd Fonts]
+    Copyright (c) 2014, Ryan L McIntyre (https://ryanlmcintyre.com).
+
+    [HackGen]
+    Copyright (c) 2019, Yuko OTAWARA
+
+The upstream repository's own LICENSE (shipped here at licenses/LICENSE_HackGen,
+line 10) states the HackGen copyright with its reserved names:
+
+    Copyright (c) 2019, Yuko OTAWARA. with Reserved Font Name "白源", "HackGen"
+
+The [Nerd Fonts] line is quoted because the shipped faces declare it, not because
+this package ships Nerd Fonts glyphs: the variant bundled here is the plain
+HackGen Console, whose cmap carries 7 private-use code points (measured on both
+shipped faces), not the HackGenConsoleNF variant with the Nerd Fonts icon set.
+The credit rides in nameID 0 upstream, so it is reproduced rather than edited
+out, and licenses/LICENSE_NerdFonts is shipped alongside for the same reason.
+
+RESERVED FONT NAME: the HackGen line above reserves "白源" and "HackGen" (OFL
+section 3). Because the bundled faces ARE a Modified Version, that clause is in
+scope here, and it is satisfied: the name they declare (ShirokumaGen Term)
+contains neither. Four reserved font names are declared anywhere in this
+package, and the derived name contains none of the four: "白源" and "HackGen"
+under OFL section 3 (the line above, and licenses/LICENSE_HackGen line 10), plus
+"Bitstream" and "Vera", which licenses/LICENSE_Hack line 5 reserves under the
+Bitstream Vera License for the faces Hack itself is built from -- a separate
+license, not OFL section 3, but a reservation all the same, and this file states
+all four because the count is what can be checked. That count is measured with
+scripts/font-fit/check-license.py, which scans every file under the package
+(deciding text from font from binary by leading bytes, not by file name) and
+reads the `name` table of each shipped face; its full output, which lists the
+same four and includes the derived-name judgement, is transcribed in README.md.
+Neither "ShirokumaGen" nor "Term" contains any of the four, and
+neither does the Japanese name 白熊源 this package is called by in Japanese
+(the tool was run on that name too, and its verdict is transcribed with the
+rest). Anything further derived from
+this font likewise may not be distributed under a name containing "白源" or
+"HackGen", nor -- for the Hack-derived outlines -- one containing "Bitstream" or
+"Vera".
+
+2. The upstream authors
+-----------------------
+
+HackGen is composed by Yuko OTAWARA from two upstream typefaces, each with its
+own primary license document, shipped here unmodified:
+
+    licenses/LICENSE_Hack            Hack (Source Foundry Authors)
+    licenses/LICENSE_GenJyuuGothic   源柔ゴシック / Gen Jyuu Gothic
+                                     (自家製フォント工房 / JIKASEI FONT KOUBOU)
+    licenses/LICENSE_NerdFonts       Nerd Fonts (Ryan L McIntyre)
+    licenses/LICENSE_HackGen         the upstream project's own LICENSE
+
+Upstream project: https://github.com/yuru7/HackGen (tag v2.10.0).
+
+3. License texts
+----------------
+
+Both faces are licensed under the SIL Open Font License, Version 1.1, whose full
+text follows below, copied verbatim from licenses/LICENSE_HackGen (the upstream
+repository's LICENSE at tag v2.10.0 -- the release archive itself carries no
+license file at all, which README.md records with the two measured sha256
+columns the convention requires). OFL section 5 requires a Modified Version to be
+distributed entirely under this same license, which is what this file does.
+
+The Hack document is MIT-licensed font work and additionally reproduces the
+Bitstream Vera License and the DejaVu project's dedication, so it speaks for more
+parties than the one named beside it above; the Nerd Fonts document covers
+OFL-licensed fonts with MIT for the project's source code. Read each document for
+what it says. Those four documents are placed byte-for-byte as fetched -- the
+conversion touched only the two TTFs.
+
+Note this file covers the *font*. It is also this extension's license: the
+extension carries no code beyond a no-op activate/deactivate stub, so there is
+nothing else to license separately.
+
+4. A note on the MIT section of the upstream LICENSE
+----------------------------------------------------
+
+licenses/LICENSE_HackGen ends with a section headed "Other source licensing
+(MIT)". That section covers the upstream project's generating scripts, which
+this package does not ship; the font files it does ship are the OFL half, as the
+same document's first two bullets state. Both halves are reproduced in that file
+rather than excerpted, so the distinction can be checked rather than taken on
+trust.
+
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+https://scripts.sil.org/OFL
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded, 
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.

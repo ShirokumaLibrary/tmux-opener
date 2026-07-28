@@ -115,30 +115,138 @@
   /**
    * Resolve the fontFamily to actually hand xterm for measurement. For an
    * OS/editor-default family this is a synchronous pass-through. For the bundled
-   * family (`TmuxFont.usesBundledFont`) it awaits `document.fonts.load` — bounded
-   * by `FONT_LOAD_TIMEOUT_MS` — and returns the bundled family only when
-   * `document.fonts.check` then confirms the face is available; on timeout or
-   * failure it returns `DEFAULT_FONT_FAMILY` so the terminal is built/reconfigured
-   * against a font that is present *now*, never against metrics that change when
-   * the bundled glyphs finish loading (the build-once-at-the-right-metrics
-   * invariant this whole deferral exists to keep).
+   * family (`TmuxFont.bundledFamilyOf`) it awaits `document.fonts.load` for both
+   * the regular and the bold face — bounded by `FONT_LOAD_TIMEOUT_MS` — and
+   * returns the bundled family only when `document.fonts.check` then confirms
+   * the *regular* face is available. If the *regular* face is still unavailable
+   * when the wait ends (timeout or load failure) it returns
+   * `DEFAULT_FONT_FAMILY` so the terminal is built/reconfigured against a font
+   * that is present *now*, never against metrics that change when the bundled
+   * glyphs finish loading (the build-once-at-the-right-metrics invariant this
+   * whole deferral exists to keep). A timeout alone does not force that
+   * fallback: the verdict is the 400 face only, so a regular face that arrived
+   * while a slow bold one was still pending still yields the bundled family.
    */
   async function resolveFontForMeasure(fontFamily, fontSize) {
     const family = fontFamily || DEFAULT_FONT_FAMILY;
-    if (!TmuxFont.usesBundledFont(family)) {
+    // Which bundled family the value selects decides which face we wait for
+    // (#233): with several bundled families, loading a fixed one would await and
+    // check the wrong face for every other selection.
+    const bundled = TmuxFont.bundledFamilyOf(family);
+    if (!bundled) {
       return family;
     }
     // document.fonts wants a CSS font shorthand: "<size>px <family>".
-    const spec = `${fontSize || 14}px "${TmuxFont.BUNDLED_FAMILY}"`;
+    // Only `bundled` — the single family name `bundledFamilyOf` matched — may go
+    // inside the quotes. `family` is the raw setting value, i.e. a CSS *stack*
+    // ("Mgen+ 1mn Term", monospace), and expanding it here yields the invalid spec
+    // `bold 14px ""Mgen+ 1mn Term", monospace"`. load() rejects an unparsable
+    // shorthand, the .catch below swallows that rejection, and the bold preload
+    // then disappears *silently* — no error, no fallback, just an unloaded 700
+    // face and a first bold row painted with whatever was there. That silence is
+    // exactly why the spec is built from `bundled`, not from `family`.
+    //
+    // This is also the consumption point that decides `bundledFamilyOf`'s return
+    // contract (#274, design #271 R11): what goes in the quotes is a CSS
+    // `@font-face` NAME being awaited, so for a settings value naming a former
+    // family (an alias) it must be the alias — that is the block getHtml injected
+    // for it — and not the canonical name the host's `matchRegisteredFamily`
+    // returns. The full reasoning for the two matchers pointing opposite ways is
+    // the asymmetry comment block in media/webview-font.js; do not fold here.
+    const regularSpec = `${fontSize || 14}px "${bundled}"`;
+    const boldSpec = `bold ${fontSize || 14}px "${bundled}"`;
+    // Preload the 700 face alongside the 400 one: xterm paints into canvas/WebGL,
+    // which does not wait for a font to load, so a bold cell drawn before its face
+    // arrives is drawn with a fallback (font-display cannot save it on that path).
+    //
+    // FORBIDDEN SHAPE — do not "shorten" this to
+    //   Promise.race([load(regularSpec), load(boldSpec), timeout])
+    // The moment bold settles the race resolves, check() runs without the regular
+    // face having loaded, and we hand xterm DEFAULT_FONT_FAMILY even though the
+    // bundled font was perfectly usable — a direct violation of the
+    // build-once-at-the-right-metrics invariant above. Regular and bold are
+    // separate files and separate downloads with no ordering guarantee (under
+    // Remote-SSH they share the channel with pty output), so "bold first" is not
+    // a corner case. Both faces are awaited by Promise.all; only the timeout is
+    // raced against them.
+    await Promise.race([
+      // Each load is caught individually so a failing bold face cannot drag the
+      // 400 face's wait down with it. load() rejects only on an unparsable
+      // shorthand or a fetch failure — an old contract that ships no 700 face
+      // does not reject: CSS font matching picks the nearest weight, so the bold
+      // request resolves against the 400 face and costs no extra fetch.
+      Promise.all([
+        document.fonts.load(regularSpec).catch(() => {}),
+        document.fonts.load(boldSpec).catch(() => {}),
+      ]),
+      new Promise((resolve) => setTimeout(resolve, FONT_LOAD_TIMEOUT_MS)),
+    ]);
+    // The verdict is taken from the 400 face alone: a missing bold face (old
+    // contract) must not drop the whole family, because cell measurement depends
+    // on the regular metrics only.
+    return document.fonts.check(regularSpec) ? family : DEFAULT_FONT_FAMILY;
+  }
+
+  /**
+   * Fire-and-forget preload of the fallback family's faces (#290, plan #287
+   * "方針 B"). A fallback face is only fetched when CSS first needs a character
+   * from it, so without this the glyphs it exists to supply blink in a moment
+   * late; asking for them up front shortens that window.
+   *
+   * It is NOT a gate, and that is the whole point: nothing awaits it, its result
+   * never reaches a verdict, and `resolveFontForMeasure`'s `check` still looks at
+   * the PRIMARY family's 400 face alone (the FORBIDDEN SHAPE note there is about
+   * what may be raced into that verdict — this call is outside it entirely).
+   * Cell measurement must depend on the primary face only; the fallback supplies
+   * characters the primary has no glyph for, which by definition are not the ones
+   * the grid is measured from.
+   *
+   * `bundledFamilyOf` is applied to the FALLBACK VALUE ON ITS OWN. That is not the
+   * longest-match trap resurfacing: the trap is a matcher fed a stack that holds
+   * both names and returning the wrong one. Here the two values are still
+   * separate, each matcher call sees exactly one of them, and this one's answer is
+   * used for nothing but a preload.
+   *
+   * Wrapped in try/catch because one of its callers is the fail-safe path below,
+   * whose reason for existing is an environment where `document.fonts` may be
+   * missing or throwing.
+   */
+  function preloadFallbackFace(fontFallback, fontSize) {
     try {
-      await Promise.race([
-        document.fonts.load(spec),
-        new Promise((resolve) => setTimeout(resolve, FONT_LOAD_TIMEOUT_MS)),
-      ]);
+      const bundled = TmuxFont.bundledFamilyOf(fontFallback);
+      if (!bundled) {
+        return;
+      }
+      const size = fontSize || 14;
+      document.fonts.load(`${size}px "${bundled}"`).catch(() => {});
+      document.fonts.load(`bold ${size}px "${bundled}"`).catch(() => {});
     } catch {
-      // load() rejects on a bad spec or a fetch failure; the check below decides.
+      // Preloading is an optimization; a hostile/absent FontFaceSet must not take
+      // the terminal down with it. CSS still fetches the face on first use.
     }
-    return document.fonts.check(spec) ? family : DEFAULT_FONT_FAMILY;
+  }
+
+  /**
+   * THE single composition point (#290, plan #287 "方針 B"): the family xterm is
+   * configured with, built from the measurement verdict and the fallback setting.
+   *
+   * Every consumer that judges family IDENTITY — the host's nudge and font picker
+   * (`matchRegisteredFamily`), this file's measurement target
+   * (`TmuxFont.bundledFamilyOf`), the toolbar chip — keeps receiving the raw
+   * PRIMARY value, because the two values are only ever joined here and this
+   * result is handed to xterm and to nothing else. Never feed it back into a
+   * matcher, and never move the join into the host: a matcher that can see the
+   * fallback name is a matcher that can pick it (the longest-match trap).
+   *
+   * Applied UNIFORMLY to whatever `resolveFontForMeasure` returned — including the
+   * `DEFAULT_FONT_FAMILY` verdict, and including the fail-safe path that never
+   * reaches a verdict at all. Whether the primary face loaded is independent of
+   * whether the user wants a second family for the characters it lacks, so a
+   * fallback dropped on either of those branches would go missing silently.
+   */
+  function fontStackForXterm(measuredFamily, fontFallback, fontSize) {
+    preloadFallbackFace(fontFallback, fontSize);
+    return TmuxFont.buildFontStack(measuredFamily, fontFallback);
   }
 
   function fitAndNotify() {
@@ -320,7 +428,7 @@
     if (generation !== fontConfigGeneration) {
       return;
     }
-    term.options.fontFamily = family;
+    term.options.fontFamily = fontStackForXterm(family, config.fontFallback, config.fontSize);
     term.options.fontSize = config.fontSize || 14;
     fitAndNotify();
   }
@@ -1417,15 +1525,33 @@
         initStarted = true;
         resolveFontForMeasure(msg.fontFamily, msg.fontSize)
           .then((family) => {
-            initTerminal({ ...msg, fontFamily: family });
+            initTerminal({
+              ...msg,
+              fontFamily: fontStackForXterm(family, msg.fontFallback, msg.fontSize),
+            });
           })
           // `initStarted` is already latched with no retry path, so a rejection
-          // (e.g. `document.fonts.check` throwing where `document.fonts` is
-          // absent — the one line outside resolveFontForMeasure's try) would
-          // leave the terminal permanently unbuilt. Fail safe: build it against
+          // (e.g. a synchronous throw where `document.fonts` is absent — the
+          // per-load `.catch` inside resolveFontForMeasure attaches to the
+          // returned promise, so it covers neither `.load`'s nor `.check`'s own
+          // throw) would leave the terminal permanently unbuilt. Fail safe: build it against
           // the raw config font, which is present now, rather than not at all.
+          //
+          // The fallback is composed in here too (#290, plan #287 review L1): this
+          // branch never reaches a verdict, so leaving it as a bare
+          // `initTerminal(msg)` would drop the user's fallback family without a
+          // word in exactly the degraded environment they are most likely to need
+          // it. `initTerminal` would apply the same `|| DEFAULT_FONT_FAMILY`
+          // itself; it is spelled out here so the composed value is what it sees.
           .catch(() => {
-            initTerminal(msg);
+            initTerminal({
+              ...msg,
+              fontFamily: fontStackForXterm(
+                msg.fontFamily || DEFAULT_FONT_FAMILY,
+                msg.fontFallback,
+                msg.fontSize,
+              ),
+            });
           });
       }
       return;

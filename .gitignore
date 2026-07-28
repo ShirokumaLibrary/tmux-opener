@@ -13,3 +13,7 @@ media/codicons/
 .shirokuma/github/
 .shirokuma/logs/
 .shirokuma/notes/
+# Python bytecode cache: verify.py imports fit.py (scripts/font-fit/), which
+# would otherwise leave a __pycache__/ in the tree. run.sh also sets
+# PYTHONDONTWRITEBYTECODE=1, so this is the second line of defence.
+__pycache__/

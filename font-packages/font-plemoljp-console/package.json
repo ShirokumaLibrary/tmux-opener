@@ -1,0 +1,39 @@
+{
+  "name": "font-plemoljp-console",
+  "displayName": "PlemolJP Console HS (font resource for extensions)",
+  "description": "Supplies the PlemolJP Console HS font to extensions that borrow a bundled monospace face. It is a resource for extension developers, not a font selectable from ordinary settings such as editor.fontFamily.",
+  "version": "0.0.1",
+  "publisher": "shirokuma-library",
+  "license": "OFL-1.1",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShirokumaLibrary/tmux-opener.git",
+    "directory": "font-packages/font-plemoljp-console"
+  },
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {},
+  "providedFont": {
+    "family": "PlemolJP Console HS",
+    "file": "fonts/PlemolJPConsoleHS-Regular.ttf",
+    "weight": "400",
+    "license": "OFL-1.1",
+    "faces": [
+      {
+        "file": "fonts/PlemolJPConsoleHS-Regular.ttf",
+        "weight": "400"
+      },
+      {
+        "file": "fonts/PlemolJPConsoleHS-Bold.ttf",
+        "weight": "700"
+      }
+    ]
+  }
+}

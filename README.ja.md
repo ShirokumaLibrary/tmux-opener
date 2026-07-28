@@ -538,6 +538,7 @@ Claude Code 自身が既に表示しています）。
 | 設定 | 説明 |
 | --- | --- |
 | `tmuxOpener.terminal.fontFamily` | ターミナルのフォント。空なら `editor.fontFamily` に従います。 |
+| `tmuxOpener.terminal.fontFallback` | ターミナルのフォントが収録していない文字にだけ使う 2 つ目のフォント。空 (既定) ならフォールバックせず、挙動は変わりません。 |
 | `tmuxOpener.terminal.fontSize` | ターミナルのフォントサイズ。未設定なら `editor.fontSize` に従います。 |
 | `tmuxOpener.profiles` | `⌄` のドロップダウンに出すコマンド。 |
 | `tmuxOpener.notifyOnBell` | セッションがターミナルベルを鳴らしたときに通知します。既定で有効。 |

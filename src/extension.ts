@@ -47,12 +47,11 @@ import {
   shouldShowInstallNudge,
 } from './claude-install.js';
 import {
-  BUNDLED_FONT_FAMILY,
   FONT_REGISTRY,
+  buildFontFaceCss,
   fontExtensionIds,
-  resolveBundledFontSource,
+  fontExtensionNudgeFamily,
   resolveExistingFontSource,
-  shouldNotifyFontExtensionMissing,
 } from './font-registry.js';
 import { buildFontOptions } from './font-options.js';
 import { resolveTerminalFontConfig } from './terminal-font.js';
@@ -379,6 +378,29 @@ function getTerminalFontConfig(): { fontFamily: string; fontSize: number } {
 }
 
 /**
+ * The raw `tmuxOpener.terminal.fontFallback` value (#290, plan #287 "方針 B") — a
+ * SECOND family supplying the characters the chosen one has no glyph for.
+ *
+ * Read straight from config rather than through `resolveTerminalFontConfig`: that
+ * resolver exists to walk an inheritance chain (`terminal.integrated.*`,
+ * `editor.fontSize`), and this setting has no counterpart there to inherit from,
+ * so putting it in would add a parameter whose chain is one link long.
+ *
+ * It is deliberately NOT part of `getTerminalFontConfig`'s return value. That
+ * function feeds the font-extension nudge and the font picker payload, both of
+ * which judge WHICH family the user selected — and a fallback name reaching a
+ * matcher is the longest-match trap (a fallback with a longer name than the
+ * primary wins the match). Keeping the two values apart at the source is what
+ * makes the mix-up unreachable rather than merely unlikely; the join happens once,
+ * in the webview's `buildFontStack`. See media/webview-font.js.
+ */
+function getTerminalFontFallback(): string {
+  return vscode.workspace
+    .getConfiguration('tmuxOpener.terminal')
+    .get<string>('fontFallback', '');
+}
+
+/**
  * Hosts a single node-pty-backed `tmux` client inside a WebviewView (xterm.js
  * on the frontend), instead of VS Code's built-in Terminal panel. Only one
  * session can be attached at a time: opening a different session kills the
@@ -407,6 +429,33 @@ const CLAUDE_INSTALL_NUDGE_DISMISSED_STATE_KEY = 'tmuxOpener.claudeInstallNudgeD
  * quiets it in every workspace.
  */
 const FONT_EXTENSION_NUDGE_DISMISSED_STATE_KEY = 'tmuxOpener.fontExtensionNudgeDismissed';
+
+/**
+ * The `fileExists` predicate `resolveExistingFontSource` (#208) injects — the one
+ * place that turns a `providedFont` contract's relative `file` into an absolute
+ * path and stats it.
+ *
+ * It is a single shared helper on purpose (#233 review L1): both consumers
+ * (`pushFontOptions`, which decides what the picker offers, and `getHtml`, which
+ * decides what `@font-face` is injected) must answer "is this face really
+ * borrowable?" the same way — two copies of this logic is exactly how the
+ * picker/injection sets drift apart.
+ *
+ * It stats **only the supplying extension's root** (#233, design #229 §4). The
+ * closure it replaces searched *every* registered font extension for the relative
+ * path — a single-*extension* assumption that, once more than one font extension is
+ * registered, reports a file present because a different extension happens to ship
+ * the same relative name. The supplying id now comes from the resolution itself, so no cross-search
+ * remains.
+ */
+function fontFileExistsInExtension(relFile: string, extensionId: string): boolean {
+  const ext = vscode.extensions.getExtension(extensionId);
+  if (!ext) {
+    return false;
+  }
+  const abs = vscode.Uri.joinPath(ext.extensionUri, ...relFile.split('/')).fsPath;
+  return fs.existsSync(abs);
+}
 
 class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
@@ -1096,7 +1145,21 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     const notifySound = vscode.workspace
       .getConfiguration('tmuxOpener')
       .get<boolean>('notifySound', true);
-    this.view?.webview.postMessage({ type: 'config', ...getTerminalFontConfig(), notifySound });
+    // CONTRACT (#290, plan #287 "方針 B"): `fontFamily` here is the PRIMARY value
+    // as resolved, never a stack this side composed. The fallback rides along as
+    // its own field and the two are joined once, in the webview
+    // (`TmuxFont.buildFontStack`), immediately before xterm is configured.
+    // Replacing `fontFamily` with a composed value would push a fallback name into
+    // every consumer that decides which family is selected — `bundledFamilyOf` (the
+    // face the terminal measures against), the nudge, the picker, the toolbar chip
+    // — where longest-match would let a longer fallback name win. Add fields; do
+    // not fold them together.
+    this.view?.webview.postMessage({
+      type: 'config',
+      ...getTerminalFontConfig(),
+      fontFallback: getTerminalFontFallback(),
+      notifySound,
+    });
     // The bundled font is borrowed from a dedicated font extension when
     // installed (#185); with the vendored copy removed (#199), if no font
     // extension supplies it the terminal renders with the OS monospace. If the
@@ -1107,14 +1170,17 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   /**
-   * Passive nudge (#186, plan #182 task 4) shown when the user has selected the
-   * bundled "M PLUS 1 Code" family but no font extension is installed to supply
-   * it, so the terminal is rendering with the OS monospace (the vendored copy
-   * was removed in #199). The decision (family selected AND extension absent AND
-   * not-yet-notified) is `shouldNotifyFontExtensionMissing`; here we only own the
-   * VS Code surface. Debounced per activation (`notifiedFontExtensionMissing`)
-   * and silenced permanently by "Don't Show Again" (`globalState`), mirroring the
-   * Claude install nudge — the nudge is informational, not a blocker.
+   * Passive nudge (#186, plan #182 task 4) shown when the user has selected one of
+   * the bundled families but no font extension is installed to supply it, so the
+   * terminal is rendering with the OS monospace (the vendored copy was removed in
+   * #199). The decision — which family is selected, AND its extension absent, AND
+   * not-yet-notified — is `fontExtensionNudgeFamily`; here we only own the VS Code
+   * surface, with the family name substituted into the message so the user is sent
+   * to the right extension (#233). Debounced per activation
+   * (`notifiedFontExtensionMissing`) and silenced permanently by "Don't Show Again"
+   * (`globalState`); per decision R7 both flags stay single across families —
+   * the nudge is informational, not a blocker, and per-family `globalState` keys
+   * are not worth the multiplication.
    */
   private maybeNotifyFontExtensionMissing(): void {
     if (this.globalState.get<boolean>(FONT_EXTENSION_NUDGE_DISMISSED_STATE_KEY, false)) {
@@ -1122,9 +1188,12 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
     const { fontFamily } = getTerminalFontConfig();
     const getExtension = (id: string) => vscode.extensions.getExtension(id);
-    if (
-      !shouldNotifyFontExtensionMissing(fontFamily, getExtension, this.notifiedFontExtensionMissing)
-    ) {
+    const family = fontExtensionNudgeFamily(
+      fontFamily,
+      getExtension,
+      this.notifiedFontExtensionMissing,
+    );
+    if (family === undefined) {
       return;
     }
     this.notifiedFontExtensionMissing = true;
@@ -1133,7 +1202,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     void vscode.window
       .showInformationMessage(
         vscode.l10n.t(
-          "Tmux Opener: the M PLUS 1 Code font extension isn't installed, so the terminal is rendering with your OS's default monospace font. To use M PLUS 1 Code, install the dedicated font extension.",
+          "Tmux Opener: the {0} font extension isn't installed, so the terminal is rendering with your OS's default monospace font. To use {0}, install the dedicated font extension.",
+          family,
         ),
         dontShow,
       )
@@ -1163,17 +1233,9 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       return;
     }
     const getExtension = (id: string) => vscode.extensions.getExtension(id);
-    const fileExists = (relFile: string): boolean =>
-      fontExtensionIds().some((id) => {
-        const ext = vscode.extensions.getExtension(id);
-        if (!ext) {
-          return false;
-        }
-        const abs = vscode.Uri.joinPath(ext.extensionUri, ...relFile.split('/')).fsPath;
-        return fs.existsSync(abs);
-      });
     const isFamilyAvailable = (family: string): boolean =>
-      resolveExistingFontSource(family, getExtension, fileExists).source === 'extension';
+      resolveExistingFontSource(family, getExtension, fontFileExistsInExtension).source ===
+      'extension';
     const { fontFamily, fontSize } = getTerminalFontConfig();
     const payload = buildFontOptions(
       this.fontFamilyEnum,
@@ -1296,7 +1358,7 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
         fontFamilyHeader: vscode.l10n.t('Font Family'),
         fontSizeHeader: vscode.l10n.t('Font Size'),
         fontEditorDefault: vscode.l10n.t('Editor default'),
-        // Tag on a bundled family row, e.g. "M PLUS 1 Code (font extension)".
+        // Tag on a bundled family row, e.g. "M PLUS 1 Code Term (font extension)".
         fontBundledSuffix: vscode.l10n.t('font extension'),
         // Toolbar action titles for the running tool ({0} is the tool label,
         // e.g. "Claude Code"). The webview replaces its English fallback with
@@ -2176,43 +2238,55 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     const fontModuleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-font.js'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview-terminal.js'));
     // Bundled-font resolution (#185, design #181 case A; vendored fallback
-    // removed in #199). A dedicated font extension (`providedFont` contract,
-    // #184) supplies the face when installed; the @font-face family stays
-    // 'M PLUS 1 Code' and the config value is untouched — only the byte source
+    // removed in #199; one @font-face per registered family since #233). Each
+    // registered family has a dedicated font extension (`providedFont` contract,
+    // #184) that supplies the face when installed; the @font-face family stays the
+    // font's own name and the config value is untouched — only the byte source
     // (and declared weight) come from it. `font-src ${webview.cspSource}` covers
     // it: asWebviewUri rewrites the borrowed extension's file to this webview's
     // own resource authority, which is exactly what cspSource returns (verified
     // on-device, SUB-A/#183), so the CSP content string is left unchanged. When
-    // no font extension supplies the face the resolution is `none`: no
-    // @font-face is injected and `"M PLUS 1 Code", monospace` falls to the OS
+    // no font extension supplies a face the resolution is `none`: no @font-face is
+    // injected for it and e.g. `"M PLUS 1 Code Term", monospace` falls to the OS
     // monospace.
+    //
+    // The whole registry is injected, not just the selected family — the
+    // pre-#233 behaviour, which also injected regardless of selection. The
+    // resolver is `resolveExistingFontSource` (existence-checked) rather than the
+    // bare `resolveBundledFontSource` (decision R6): `pushFontOptions` already
+    // filtered the picker on the file being on disk, so using the weaker resolver
+    // here would inject an @font-face pointing at a missing file for a family the
+    // picker doesn't even offer. Injection set == picker set.
+    //
+    // A family is injected under its CANONICAL name and under every alias it
+    // declares — the same faces, one `@font-face` set per name (#274, design #271
+    // R3). Injection never reads the TTF's name table, so an old settings value
+    // (a former family name) keeps rendering from the current bytes as long as a
+    // block carries that old name.
+    //
+    // The CSS assembly itself lives in `buildFontFaceCss` (src/font-registry.ts),
+    // which is `vscode`-free and so reachable from `node --test`; this file is not,
+    // and the alias loop originally went in here untested — a mutation dropping the
+    // alias-named blocks passed the entire suite. What stays here is the URI work
+    // alone: resolving the borrowed extension and rewriting a contract-relative
+    // file with `asWebviewUri`. `localResourceRoots` is per supplying EXTENSION
+    // (fontExtensionIds()), so serving a second file from the same extension needs
+    // no change there, and the CSP string is likewise untouched (#183: the root is
+    // the access control).
     const getFontExtension = (id: string) => vscode.extensions.getExtension(id);
-    const fontResolution = resolveBundledFontSource(BUNDLED_FONT_FAMILY, getFontExtension);
-    let fontFaceCss = '';
-    if (fontResolution.source === 'extension') {
-      const borrowedFontExtension = getFontExtension(fontResolution.extensionId);
-      if (borrowedFontExtension) {
-        const fontFileUri = vscode.Uri.joinPath(
-          borrowedFontExtension.extensionUri,
-          ...fontResolution.file.split('/'),
-        );
-        const fontUri = webview.asWebviewUri(fontFileUri);
-        // Bundled font (#174/#175) borrowed from a font extension (#185). The
-        // font-weight is the axis the resolved TTF declares (defaulting to the
-        // face's fvar wght 100–700 when the providedFont contract omits it).
-        // xterm only ever asks for 400/700, so this is a fidelity detail, not
-        // behavioural. font-display: block holds text invisible until the face
-        // loads rather than flashing a fallback, which pairs with the webview's
-        // document.fonts.load await (resolveFontForMeasure).
-        fontFaceCss = `  @font-face {
-    font-family: 'M PLUS 1 Code';
-    src: url(${fontUri}) format('truetype');
-    font-weight: ${fontResolution.weight};
-    font-display: block;
-  }
-`;
-      }
-    }
+    const fontFaceCss = buildFontFaceCss(
+      FONT_REGISTRY,
+      (family) => resolveExistingFontSource(family, getFontExtension, fontFileExistsInExtension),
+      (extensionId, file) => {
+        const borrowedFontExtension = getFontExtension(extensionId);
+        if (!borrowedFontExtension) {
+          return undefined;
+        }
+        return webview
+          .asWebviewUri(vscode.Uri.joinPath(borrowedFontExtension.extensionUri, ...file.split('/')))
+          .toString();
+      },
+    );
     const codiconCss = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css'),
     );
@@ -2850,6 +2924,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
     if (
+      // Section prefix, so this already covers every `tmuxOpener.terminal.*` key
+      // including `fontFallback` (#290). Do NOT add a branch naming that key in
+      // full: it would be true at the same time as this one and push the config
+      // message twice for a single change. (What the guard in
+      // test/webview-terminal-font.test.js forbids is the full CALL form —
+      // `affectsConfiguration` applied to that key — appearing anywhere in this
+      // file, comments included, the way #125's emoji guard tripped on its own
+      // docs. Writing the KEY NAME on its own is fine and does not fail it; the
+      // docblock at `getTerminalFontFallback` above does exactly that. Measured,
+      // both directions, in the #290 review.)
       e.affectsConfiguration('tmuxOpener.terminal') ||
       // The terminal now inherits `terminal.integrated.font*` / `editor.fontSize`
       // when its own settings are unset (#194), so re-push on those too.

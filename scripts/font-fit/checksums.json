@@ -1,0 +1,63 @@
+{
+  "note": [
+    "run.sh が変換完了時に書き出す、出力 TTF の sha256（設計 #271 R7 三段連鎖の 3 段目・",
+    "R13 の照合元）。widths.json とは扱いが逆で、こちらは**コミットする**——",
+    "成果物のバイト列に対する主張だから。npm test（#276 の test/font-cellfit.test.js）が",
+    "同梱 TTF の実測 sha256 と突き合わせ、片方だけ動けば fail する。",
+    "outputs のキーはリポジトリルートからの相対パス。値は { sha256, fitRatio, vstretch }",
+    "で、sha256 は小文字 hex、fitRatio / vstretch は**その TTF を焼いたときに実際に",
+    "使った横の倍率と縦の伸長率**（#291 / #293）。sha256 だけでは「どの値で焼いたか」が",
+    "復元できない——バイト列が違うことは分かっても、なぜ違うのかは分からない——ので、",
+    "記録を 1 段厚くする。**vstretch では記録がいっそう重い**: 出荷バイトだけからは",
+    "縦の伸長率を測れない（等倍のときの高さが上流ファイル側にあり、このリポジトリは",
+    "それを持たない）ので、npm test にとってはこの記録が唯一の束縛になる。",
+    "意味・上限・既定の正本は manifest.json の note（ここでは繰り返さない）。",
+    "現在は 8 面ぶん——ShirokumaGen Term の 2 面が #289 で加わった",
+    "（既存 6 面は #293 の TTF 差し替えと同一 commit で実測値が入っている）。",
+    "限界: R13 が縛るのは恒等であって来歴ではない（設計 #271 の『検証の限界』節）。",
+    "fitRatio / vstretch の記録も同じ限界を共有する: run.sh を経由せず TTF と記録を一緒に",
+    "書き換えれば辻褄は合ってしまう。捕まえるのは事故であって改竄ではない。"
+  ],
+  "outputs": {
+    "font-packages/font-mgenplus-1mn/fonts/MgenPlus1mnTerm-Regular.ttf": {
+      "sha256": "05973b8cb602325d735b27293df5cf103d90fb23192a737f2811e78bf9028adf",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-mgenplus-1mn/fonts/MgenPlus1mnTerm-Bold.ttf": {
+      "sha256": "c8f0fd9be1d08905ce28859b647912ba8fa5dd0ff2834ca61b2520d6338d953d",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-rounded-mgenplus-1mn/fonts/RoundedMgenPlus1mnTerm-Regular.ttf": {
+      "sha256": "33d91acae4b4332b9ca03e69d180ae2fb5cda61f861f2f773ed0f6f5c7e605ea",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-rounded-mgenplus-1mn/fonts/RoundedMgenPlus1mnTerm-Bold.ttf": {
+      "sha256": "b003c0af1c2d382d5fbf2c7f0db2c75042a44adbd3e097f56a8a54936bab5874",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-mplus1code/fonts/MPLUS1CodeTerm-Regular.ttf": {
+      "sha256": "63c80ed65c2a9eff8a80d54cf918aa2cbf68a06f6f23dc04d0a04ed401521ebf",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-mplus1code/fonts/MPLUS1CodeTerm-Bold.ttf": {
+      "sha256": "06f4fd340d71a39f44dc516f03968fd40608f4d300d9594269cc7ec7b4474f0f",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-shirokumagen/fonts/ShirokumaGenTerm-Regular.ttf": {
+      "sha256": "a1ae61cd72e9ec6eb2869e4581adcb1f56f99f08bb9e6b2d232f09b50bccdcf7",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    },
+    "font-packages/font-shirokumagen/fonts/ShirokumaGenTerm-Bold.ttf": {
+      "sha256": "c31cd509f2a909fc799e28a0c0948842c00a089f4ee332028a0a3f5463b936ea",
+      "fitRatio": 1.15,
+      "vstretch": 1.3
+    }
+  }
+}

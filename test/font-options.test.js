@@ -21,7 +21,7 @@ const { buildFontOptions } = require('../src/font-options.ts');
 const { BUNDLED_FONT_FAMILY } = require('../src/font-registry.ts');
 
 // The bundled family ships in the enum as a CSS stack, not the bare family name.
-const BUNDLED_ENUM_VALUE = '"M PLUS 1 Code", monospace';
+const BUNDLED_ENUM_VALUE = '"M PLUS 1 Code Term", monospace';
 const FAMILY_ENUM = ['', BUNDLED_ENUM_VALUE, 'Menlo, monospace', 'monospace'];
 const SIZE_ENUM = [null, 12, 14, 16];
 const REGISTERED = [BUNDLED_FONT_FAMILY];
@@ -78,4 +78,57 @@ test('matches the registered family as a substring of the CSS stack enum value',
   });
   // The predicate is invoked with the bare registered family name, not the stack.
   assert.deepEqual(seen, [BUNDLED_FONT_FAMILY]);
+});
+
+// --- Substring collision between registered families (#233, design #229 R5) ---
+// 'Mgen+ 1mn Term' is a substring of 'Rounded Mgen+ 1mn Term' (measured off the
+// converted TTFs' name tables in #275; the same relation held for the pre-rename
+// names, #232), so a registry-order `includes` scan matches the Rounded enum
+// entry against Mgen+ — deciding whether to OFFER Rounded by whether the *Mgen+*
+// extension is installed, and asking the predicate about the wrong family.
+
+const MGEN = 'Mgen+ 1mn Term';
+const ROUNDED = 'Rounded Mgen+ 1mn Term';
+const MGEN_ENUM_VALUE = '"Mgen+ 1mn Term", monospace';
+const ROUNDED_ENUM_VALUE = '"Rounded Mgen+ 1mn Term", monospace';
+// Registry order: the shorter, contained name comes first — the ordering that
+// makes a naive scan wrong.
+const REGISTERED_3 = [BUNDLED_FONT_FAMILY, MGEN, ROUNDED];
+
+test('a Rounded enum value is matched to Rounded, not to the contained Mgen+ name', () => {
+  const seen = [];
+  buildFontOptions([ROUNDED_ENUM_VALUE], SIZE_ENUM, '', 14, REGISTERED_3, (family) => {
+    seen.push(family);
+    return true;
+  });
+  assert.deepEqual(seen, [ROUNDED]);
+});
+
+test('Rounded stays offered when only ITS extension supplies a face', () => {
+  const payload = buildFontOptions(
+    ['', MGEN_ENUM_VALUE, ROUNDED_ENUM_VALUE, 'Menlo, monospace'],
+    SIZE_ENUM,
+    '',
+    14,
+    REGISTERED_3,
+    (family) => family === ROUNDED,
+  );
+  const values = payload.families.map((f) => f.value);
+  assert.ok(values.includes(ROUNDED_ENUM_VALUE), 'available Rounded must be offered');
+  assert.ok(!values.includes(MGEN_ENUM_VALUE), 'unavailable Mgen+ must be dropped');
+  assert.equal(payload.families.find((f) => f.value === ROUNDED_ENUM_VALUE).bundled, true);
+});
+
+test('Rounded is dropped when only the Mgen+ extension supplies a face', () => {
+  // The inverse of the bug: Mgen+ being available must not smuggle Rounded in.
+  const payload = buildFontOptions(
+    [MGEN_ENUM_VALUE, ROUNDED_ENUM_VALUE],
+    SIZE_ENUM,
+    '',
+    14,
+    REGISTERED_3,
+    (family) => family === MGEN,
+  );
+  const values = payload.families.map((f) => f.value);
+  assert.deepEqual(values, [MGEN_ENUM_VALUE]);
 });
