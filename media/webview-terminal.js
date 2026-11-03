@@ -246,7 +246,14 @@
    */
   function fontStackForXterm(measuredFamily, fontFallback, fontSize) {
     preloadFallbackFace(fontFallback, fontSize);
-    return TmuxFont.buildFontStack(measuredFamily, fontFallback);
+    // The primary is narrowed HERE, before `buildFontStack` splices anything into
+    // it (#297): this is the sole composition point, and what leaves it goes
+    // straight into xterm's `_injectCss`, which builds a <style> by string
+    // concatenation. `buildFontStack` already narrows the fallback token (#290).
+    return TmuxFont.buildFontStack(
+      TmuxFont.sanitizeFontStack(measuredFamily),
+      fontFallback,
+    );
   }
 
   function fitAndNotify() {
@@ -784,6 +791,10 @@
     } else {
       openNewSessionMenu(e.currentTarget.parentElement);
     }
+  });
+  document.getElementById('refreshSessions').addEventListener('click', () => {
+    closeContextMenu();
+    vscodeApi.postMessage({ type: 'refreshSessions' });
   });
   document.getElementById('killSession').addEventListener('click', () => {
     closeContextMenu();

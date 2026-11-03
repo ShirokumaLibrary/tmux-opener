@@ -59,8 +59,8 @@ bold が実バイトとして存在するので、両方の `@font-face` を注�
 
 `family` は想定値ではなく name table の **実測値**(下記「family 名」節)。上表の `weight` はどれも
 省略せず単一値で書いてある。省略した場合の帰結は**どちらの宣言形から省いたか**で異なり、その
-2 つの規則は全 package 共通の記述として契約仕様の単一正本 `font-packages/README.md` に一度だけ
-書いてある。
+2 つの規則は全 package 共通の記述として契約仕様の単一正本 `font-packages/README.ja.md`
+(規範の正は英語版 `font-packages/README.md`)に一度だけ書いてある。
 
 著作権表示とライセンス全文は
 `LICENSE.txt`、配布物そのままのライセンス本文は `fonts/SIL_Open_Font_License_1.1.txt` を参照。
@@ -179,7 +179,8 @@ editor.fontFamily」と明言しているのはこのため)。
 バックする)。
 
 **それを消費側がどう読むか——2 つの宣言形・どちらが正か・正規化と縮退の規則・コード付きの
-借用手順——は同じリポジトリの `font-packages/README.md` が単一正本。本節はこの package が
+借用手順——は同じリポジトリの `font-packages/README.ja.md`(規範の正は英語版
+`font-packages/README.md`)が単一正本。本節はこの package が
 何を宣言しているかだけを記録する。** tmux-opener 本体の `src/font-registry.ts` / `getHtml` が
 消費側の実装例。
 
@@ -392,8 +393,8 @@ grep -rniI 'reserved font name' \
 
 両列とも実測値で、順序に意味がある: 左はリポジトリへコピーする **前** に scratchpad 上の展開
 ファイルから取ったもの、右はコミット後のファイルから取ったもの。この作法——および自己参照の
-1 列では何も検証しない理由——は全 package 共通の規律として `font-packages/README.md` に一度だけ
-書いてある。
+1 列では何も検証しない理由——は全 package 共通の規律として `font-packages/README.ja.md`
+(規範の正は英語版 `font-packages/README.md`)に一度だけ書いてある。
 
 | アーカイブ内エントリ | sha256(展開時) | 配置先 | sha256(配置後) |
 |---|---|---|---|
@@ -431,7 +432,8 @@ nameID 16 が typographic family で、2 face で完全に同一 —— 上流�
 束ねてよい」ことの正当性(と、下記のメトリクス一致が偶然ではなく期待される性質であること)を
 支える。**注入機構はこれに依存しない**: `@font-face` は family 名を読むのではなく **宣言する**
 規則で、CSS の font matching はファイル内部の名前を参照しない(機構の全文は
-`font-packages/README.md`)。この表はフォントについての証拠であって、機構についての証拠では
+`font-packages/README.ja.md`。規範の正は英語版 `font-packages/README.md`)。この表は
+フォントについての証拠であって、機構についての証拠では
 ない。
 
 `Rounded Mgen+ 1mn Term` がこの拡張機能の `providedFont.family` が持つ値であり、消費側の

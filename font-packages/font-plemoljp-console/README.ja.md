@@ -28,7 +28,8 @@ PlemolJP Console HS フォントを **他の拡張機能へ供給する** ため
 
 上の表の `weight` はいずれも省略せず明示している。省略した場合の帰結は**どちらの宣言形から
 省いたか**で異なり、その 2 つの規則は全 package 共通の記述として契約仕様の単一正本
-`font-packages/README.md` に一度だけ書いてある。
+`font-packages/README.ja.md`(規範の正は英語版 `font-packages/README.md`)に一度だけ
+書いてある。
 
 著作権表示とライセンス全文は `LICENSE.txt`、参照している上流構成要素の一次ライセンス文書は
 `licenses/` を参照。
@@ -155,7 +156,8 @@ editor.fontFamily」と明言しているのはこのため)。
 消費側もそのまま動く(bold face は得られず、従来どおり合成太字にフォールバックする)。
 
 **消費側がこれをどう読むか —— 2 つの宣言形・どちらが優先されるか・正規化と縮退の規則・
-コード付きの借用手順 —— は同じリポジトリの `font-packages/README.md` にある。あちらが規約の
+コード付きの借用手順 —— は同じリポジトリの `font-packages/README.ja.md`(規範の正は英語版
+`font-packages/README.md`)にある。あちらが規約の
 単一正本であり、この節は *このパッケージが宣言している内容* だけを記録する。**
 tmux-opener の `src/font-registry.ts` / `getHtml` が消費側の実装例。
 
@@ -180,8 +182,8 @@ TTF は 2 本とも **配布物のバイト列そのまま**(無改変・元の�
 
 両列とも実測値で、順序に意味がある: 左はリポジトリへコピーする **前** に scratchpad 上の展開
 ファイルから取ったもの、右は配置後のファイルから取ったもの。この作法——および自己参照の
-1 列では何も検証しない理由——は全 package 共通の規律として `font-packages/README.md` に一度だけ
-書いてある。
+1 列では何も検証しない理由——は全 package 共通の規律として `font-packages/README.ja.md`
+(規範の正は英語版 `font-packages/README.md`)に一度だけ書いてある。
 
 | アーカイブ内エントリ | sha256(エントリ・展開時) | 配置先 | sha256(配置後) |
 |---|---|---|---|
@@ -242,7 +244,8 @@ Hack の文書は上流パス `source/hack/LICENSE` にあり、3 件の命名�
 正当性(と、下記のメトリクス一致が偶然ではなく期待される性質であること)を支える。
 **注入機構はこれに依存しない**: `@font-face` は family 名を読むのではなく **宣言する** 規則で、
 CSS の font matching はファイル内部の名前を参照しない(機構の全文は
-`font-packages/README.md`)。この行はフォントについての証拠であって、機構についての証拠では
+`font-packages/README.ja.md`。規範の正は英語版 `font-packages/README.md`)。この行は
+フォントについての証拠であって、機構についての証拠では
 ない。
 
 `PlemolJP Console HS` がこの拡張機能の `providedFont.family` が持つ値であり、消費側のレジストリ

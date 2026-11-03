@@ -55,7 +55,8 @@ Regular が `y = -72..856`・Bold が `-80..866`。伸ばした結果がその�
 範囲ではない**: 範囲はその重みを覆うという*主張*であり、静的な Regular が `100 700` を名乗ると
 CSS の font matching がそれを bold セルの「本物」として選び、regular の太さで描いてしまう——
 範囲宣言は合成 bold を**生む**のではなく**抑止する**。ここでは 700 は実在の bold face が覆って
-いる。理由は全パッケージ共通で `font-packages/README.md` に 1 箇所だけ書いてある。
+いる。理由は全パッケージ共通で `font-packages/README.ja.md`(規範の正は英語版
+`font-packages/README.md`)に 1 箇所だけ書いてある。
 
 **どの上流バリアントか、なぜそれが効くか。** HackGen は 1 リリースにつき 4 family を公開して
 いるが、このパッケージが変換したのは **`HackGenConsole`** であって `HackGenConsoleNF` ではない。
@@ -97,7 +98,8 @@ NF 版は Nerd Fonts のアイコン集合を足したもので、そのグリ�
 無音で壊れる。
 
 **契約の仕様——2 つの宣言形・読み手の正規化規則・劣化規則・消費側の手順(コード付き)——は同じ
-リポジトリの `font-packages/README.md` が単一の正本である。この節は*このパッケージが何を
+リポジトリの `font-packages/README.ja.md`(規範の正は英語版 `font-packages/README.md`)が
+単一の正本である。この節は*このパッケージが何を
 宣言しているか*だけを記録する。**
 
 この拡張機能の `providedFont`:
@@ -169,7 +171,8 @@ archive 自体はコミットしていない。中身は TTF 8 本とディレ�
 #### ライセンス文書(archive に無いので上流リポジトリから取得)
 
 リリース archive がライセンスファイルを持たないため、一次文書は上流リポジトリの **`v2.10.0`
-タグ**から取得した(`font-packages/README.md` がこの場合のために定めている経路)。来歴は TTF と
+タグ**から取得した(`font-packages/README.ja.md` がこの場合のために定めている経路。規範の正は
+英語版 `font-packages/README.md`)。来歴は TTF と
 同じく独立に実測した二列で記録する: 左は配置**前**の取得時、右は配置後のファイル。
 
 | 取得元 URL | sha256(取得時) | 配置先 | sha256(配置後) |
@@ -382,7 +385,8 @@ Bitstream Vera License を再録していることで入ってくる `"Bitstream
 `ShirokumaGen Term` も 白熊源 も、6 件の候補のどれも含まない。予約名は、派生名を機械的に
 `HackGen Console Term` としなかった理由でもある —— 上流の family に `Term` を足すだけの名前は、
 予約フォント名を含む名前を公開することになる。**`Console` が落ちているのは別の理由**で、
-命名規則(`font-packages/README.md`「How a shipped family name is derived」)による:
+命名規則(`font-packages/README.ja.md`「出荷する family 名の導き方」。規範の正は英語版
+`font-packages/README.md` の "How a shipped family name is derived")による:
 決め手はその語が**何を言っているか**であって、`Console` は「端末向けに整えた側」という
 上流の目印 —— つまり ` Term` が主張する性質そのもの —— なので、二重に同じことを言うことに
 なる。(`M PLUS 1 Code` の `Code` は**どの書体か**を言っている。プロポーショナルな
@@ -410,7 +414,8 @@ Bitstream Vera License を再録していることで入ってくる `"Bitstream
 どちらの面も nameID 16 / 17 の対を持たない。family は nameID 1 で、2 面で一致している ——
 これが 2 面を 1 つの CSS `font-family` にまとめてよい根拠である。**注入はこれに依存しない** ——
 `@font-face` は family 名を*宣言*するのであって読み取らないし、CSS の font matching はファイル
-内部の名前を参照しない。機構の説明は `font-packages/README.md` にある。この表はフォントについての
+内部の名前を参照しない。機構の説明は `font-packages/README.ja.md`(規範の正は英語版
+`font-packages/README.md`)にある。この表はフォントについての
 証拠であって、機構についての証拠ではない。
 
 `ShirokumaGen Term` はこの拡張機能の `providedFont.family` が持つ値で、消費側の
@@ -475,6 +480,7 @@ Bitstream Vera License を再録していることで入ってくる `"Bitstream
 
 繰り返すが、VS Code にはフォントを拡張機能間で共有する**公式機構は存在しない**。借用手順は
 供給側(この拡張機能)と消費側(tmux-opener 等)の間で取り決めた非公式の自前規約であり、
-`providedFont` 契約フィールドがその合意の正本、`font-packages/README.md` が規約の*説明*の正本で
+`providedFont` 契約フィールドがその合意の正本、`font-packages/README.ja.md`(規範の正は英語版
+`font-packages/README.md`)が規約の*説明*の正本で
 ある。契約フィールドの形やフォントファイルの位置を変えるときは、消費側が無音で壊れることを
 念頭に、両側を一緒に更新すること。

@@ -33,6 +33,7 @@ const {
   fontFamilyChipText,
   fontSizeChipText,
   buildFontStack,
+  sanitizeFontStack,
 } = require('../media/webview-font.js');
 const { FONT_REGISTRY, registeredFamilyNames } = require('../src/font-registry.ts');
 
@@ -1268,4 +1269,239 @@ test('the M PLUS description says the refit adds no glyph and points at fontFall
     );
     assert.ok(text.includes('survey.py'), `${f} must name what measured the coverage`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #297 / #302: the PRIMARY `tmuxOpener.terminal.fontFamily` reaching the same
+// `_injectCss` sink. #290 closed the fallback token and said so in a SCOPE note;
+// this closes the other half.
+//
+// THE MATRIX IS THE ONE #290 WROTE DOWN (axes A-G above), reused deliberately:
+// two rounds of that fix were lost to a biased payload set, and inventing a fresh
+// set here would throw away what those rounds cost. Axis F gains the case the
+// primary has and the fallback never did — a LEGITIMATE `var()`, which is the
+// webview's own default and must survive untouched.
+// ---------------------------------------------------------------------------
+
+// NEGATIVE CONTROLS FIRST. Every value that is legitimate today must come back
+// BYTE-IDENTICAL — that is the whole reason `sanitizeFontStack` validates and
+// passes through instead of splitting and rejoining.
+test('sanitizeFontStack is byte-identical on every value that is legitimate today', () => {
+  const legitimate = [
+    // The webview's own default: one top-level token whose commas are inside var().
+    'var(--vscode-editor-font-family, Menlo, Monaco, "Courier New", monospace)',
+    // var() with no fallback argument at all.
+    'var(--vscode-editor-font-family)',
+    // Every value the settings enum offers.
+    '"M PLUS 1 Code Term", monospace',
+    '"Mgen+ 1mn Term", monospace',
+    '"Rounded Mgen+ 1mn Term", monospace',
+    '"PlemolJP Console HS", monospace',
+    '"ShirokumaGen Term", monospace',
+    // The #275 aliases, as a settings.json that predates the rename holds them.
+    '"Mgen+ 1mn", monospace',
+    '"Rounded Mgen+ 1mn", monospace',
+    '"M PLUS 1 Code", monospace',
+    // Bare identifiers, generics, multi-word unquoted names, single quotes.
+    'monospace',
+    'Menlo',
+    'Menlo, Monaco, monospace',
+    'Courier New, monospace',
+    "'Courier New', monospace",
+    // Spacing the user chose, which a split-and-rejoin would silently normalise.
+    '"A" ,   B ,monospace',
+  ];
+  for (const value of legitimate) {
+    assert.equal(
+      sanitizeFontStack(value),
+      value,
+      `sanitizeFontStack must not touch the legitimate value ${JSON.stringify(value)}`,
+    );
+  }
+});
+
+test('sanitizeFontStack keeps a hostile fontFamily inside the font stack (#297)', () => {
+  const LF = String.fromCharCode(10);
+  const CR = String.fromCharCode(13);
+  const NUL = String.fromCharCode(0);
+  const DEL = String.fromCharCode(127);
+  const escaper = '} body{background:red} .x{';
+  const payloads = [
+    // B=same kind, C=none — the shape #290 needed two rounds to find.
+    '"A"' + escaper + '"B"',
+    "'A'" + escaper + "'B'",
+    '"A"; color: red; font-family: "B"',
+    "'A'; color: red; font-family: 'B'",
+    // B=unbalanced / E=left open
+    '"A' + escaper,
+    '"A"' + escaper + '"',
+    'A' + escaper + '"',
+    // C=LF/CR/NUL/DEL
+    'X' + LF + escaper,
+    '"X' + LF + escaper + '"',
+    "'X" + CR + escaper + "'",
+    'X' + NUL + escaper,
+    'X' + DEL + escaper,
+    // D=comment / colon / open brace / parens
+    '"A"/*',
+    'A/*',
+    '"A": url(x',
+    '"A"{',
+    'a)b(',
+    // G=backslash
+    'X\\',
+    '"X\\"',
+    'Menlo\\',
+    '"A\\"' + escaper + '"B"',
+    // F=comma list, and a var() being ABUSED — the token shape the identity test
+    // above proves is accepted when it is well-formed must still be refused here.
+    '"A"' + escaper + '"B", monospace',
+    'Menlo, "A"' + escaper + '"B"',
+    'var(--x, "A"' + escaper + '"B")',
+    'var(--x) } body{background:red} .y{ var(--z)',
+    '"A" ' + escaper + ' "B"',
+  ];
+  for (const payload of payloads) {
+    // The counterfactual: the value spliced in RAW, which is exactly what the
+    // primary did before this change. Without this the assertion below could pass
+    // on payloads that were inert to begin with.
+    assert.notEqual(
+      leavesItsToken(payload),
+      '',
+      `payload ${JSON.stringify(payload)} is inert even raw — useless as a control`,
+    );
+    const safe = sanitizeFontStack(payload);
+    assert.equal(
+      leavesItsToken(safe),
+      '',
+      `sanitized ${JSON.stringify(safe)} still leaves its token: ${leavesItsToken(safe)}`,
+    );
+  }
+});
+
+// The repair that is NOT byte-identical, pinned rather than left to be discovered:
+// an unquoted `Mgen+ 1mn` was never valid CSS (no identifier may hold `+`), so it
+// is quoted. Recording it here is what keeps "every legitimate value is
+// byte-identical" an honest claim rather than an unchecked one.
+test('sanitizeFontStack quotes a name that was never a valid CSS identifier', () => {
+  assert.equal(sanitizeFontStack('Mgen+ 1mn, monospace'), '"Mgen+ 1mn", monospace');
+});
+
+// The wiring, not just the function. A `sanitizeFontStack` that nothing calls
+// would leave every test above green while the sink stayed open — which is the
+// exact shape of "checked nothing and reported green" this repo has hit at #105,
+// #276 and #291. `fontStackForXterm` is the sole composition point (the three call
+// sites all route through it), so pinning the call there pins the whole path.
+test('the webview narrows the primary at the composition point (#297)', () => {
+  const fn = /function fontStackForXterm\([\s\S]*?\n {2}\}/.exec(webviewTerminalSource);
+  assert.ok(fn, 'fontStackForXterm must still exist under that name');
+  assert.match(
+    fn[0],
+    /TmuxFont\.sanitizeFontStack\(/,
+    'fontStackForXterm must narrow the primary before composing the stack',
+  );
+  // ...and it must reach buildFontStack, so the fallback stays narrowed too.
+  assert.match(fn[0], /TmuxFont\.buildFontStack\(/);
+});
+
+// Counterexamples found by PR #304's review, pinned so the class cannot come back.
+// Each one was a value CSS accepts and the first cut of `sanitizeFontStack` rewrote.
+test('sanitizeFontStack preserves the legitimate values review found it rewriting', () => {
+  const preserved = [
+    // css-syntax-3 makes every code point >= U+0080 an ident code point, so an
+    // unquoted Japanese or Korean family name is valid CSS. An ASCII-only identifier
+    // class quoted them — in an extension whose whole purpose is bundling Japanese
+    // fonts.
+    'メイリオ, monospace',
+    'ヒラギノ角ゴ ProN, monospace',
+    '한컴돋움, monospace',
+    // A CSS function name is ASCII case-insensitive.
+    'VAR(--vscode-editor-font-family, monospace)',
+    'Var(--x)',
+    // css-variables-1 allows an EMPTY fallback argument.
+    'var(--x,)',
+    'var(--x, )',
+  ];
+  for (const value of preserved) {
+    assert.equal(sanitizeFontStack(value), value, `must not rewrite ${JSON.stringify(value)}`);
+  }
+});
+
+// The repair is per token, not per stack. Quoting the whole value because one token
+// is bad would stringify the var() and delete the user's default font — the failure
+// the validate-and-passthrough design exists to avoid, reintroduced by its own
+// repair path (PR #304 review, Medium-2).
+test('sanitizeFontStack repairs only the token that is broken', () => {
+  const out = sanitizeFontStack('var(--vscode-editor-font-family, Menlo), "A"} body{x{"B"');
+  assert.match(
+    out,
+    /^var\(--vscode-editor-font-family, Menlo\), /,
+    `the good var() token must survive intact, got ${JSON.stringify(out)}`,
+  );
+  assert.equal(leavesItsToken(out.slice(out.indexOf('), ') + 3)), '');
+  // A generic tail is likewise kept rather than swallowed.
+  assert.match(sanitizeFontStack('"A"} body{x{"B", monospace'), /, monospace$/);
+});
+
+// Axis D, revisited after the identifier class was WIDENED (PR #304 review, High).
+// Every escaper in the matrix above carries `.` and `:`, which are not ident code
+// points under any version of the class — so no row in it could ever probe a class
+// that had grown. When a predicate is loosened, the axis it was loosened on needs
+// payloads of its own; these are `}` beside characters that ARE idents. On the
+// broken class (`_-<U+FFFF>` read as a range from U+005F) all four passed through
+// byte-for-byte.
+test('sanitizeFontStack refuses a brace-only escape (#304 review High)', () => {
+  const braceOnly = [
+    'A} x{',
+    'Menlo} body{',
+    'Menlo, A} y{',
+    'var(--x, A} y{)',
+  ];
+  for (const payload of braceOnly) {
+    assert.notEqual(
+      leavesItsToken(payload),
+      '',
+      `payload ${JSON.stringify(payload)} is inert even raw — useless as a control`,
+    );
+    const safe = sanitizeFontStack(payload);
+    assert.equal(
+      leavesItsToken(safe),
+      '',
+      `sanitized ${JSON.stringify(safe)} still leaves its token: ${leavesItsToken(safe)}`,
+    );
+  }
+});
+
+// Static guard, same species as test/statusline.test.js's U+FE0F/U+200D assertion.
+// PR #304's second round shipped a regex class written with a LITERAL U+FFFF, which
+// JS read as a range from U+005F — `}` `{` `|` `~` became ident characters and the
+// sanitizer became a no-op for `A} body{`. Every gate stayed green, because the bug
+// was invisible in the source: a reviewer has to run `hexdump` to see which hyphen
+// is a range and which is a member. Escapes make both endpoints readable, and this
+// assertion is what keeps them escaped.
+//
+// Written as codepoint ranges rather than by pasting the disallowed bytes, so the
+// guard cannot fail on its own text.
+test('media/webview-font.js holds no raw control or noncharacter bytes', () => {
+  const src = readFileSync(path.join(__dirname, '..', 'media', 'webview-font.js'), 'utf8');
+  const offenders = [];
+  for (let i = 0; i < src.length; i += 1) {
+    const cp = src.charCodeAt(i);
+    const raw =
+      (cp <= 0x1f && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || // C0 except tab/CR/LF
+      cp === 0x7f || // DEL
+      (cp >= 0x80 && cp <= 0x9f) || // C1
+      cp === 0xfffe ||
+      cp === 0xffff; // noncharacters
+    if (raw) {
+      offenders.push('U+' + cp.toString(16).toUpperCase().padStart(4, '0') + '@' + i);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'write these as \\uXXXX escapes — a literal one hides whether a neighbouring ' +
+      'hyphen is a range or a member, which is exactly how #304 shipped a no-op ' +
+      'sanitizer past every gate: ' + offenders.join(', '),
+  );
 });

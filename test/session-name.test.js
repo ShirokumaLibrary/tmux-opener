@@ -179,3 +179,63 @@ test('updateSessionName stays inside the base "--" namespace (collision-safe)', 
   assert.ok(isRelatedSession('foo', updateSessionName('foo')));
   assert.ok(!isRelatedSession('foo-update', updateSessionName('foo')));
 });
+
+// ---------------------------------------------------------------------------
+// The separator as the READMEs state it (#308).
+//
+// Both READMEs walk a reader through the naming scheme with a worked example
+// (`myrepo`, then the numbered and the profile session). Until #308 they wrote
+// it with ONE dash, which is what `SESSION_SEPARATOR` was before the collision
+// fix — so the documents described a scheme the code had stopped using, and a
+// reader copying it out (a blog post did) reproduced the stale form.
+//
+// WHAT IS BOUND, AND WHAT IS NOT. This is a CURATED PAIR of documents, not a
+// sweep, and reading it as "every place the separator appears is checked" is
+// the failure it must not cause:
+//
+//   * BOUND: the two files in `SEPARATOR_QUOTING_DOCS`, each required to spell
+//     the numbered and the profile example with today's `SESSION_SEPARATOR`.
+//     The expected strings are DERIVED from the constant, so flipping the
+//     constant reddens the documents rather than silently re-describing them.
+//   * NOT BOUND, on purpose:
+//     - Any other file naming a session (CLAUDE.md, the pages confirmation
+//       views, commit messages). They are not the user-facing description of
+//       the scheme, which is what this check is for.
+//     - The PROSE around the examples — the sentence explaining why the
+//       separator is doubled is required by #308's acceptance criteria but is
+//       not machine-checkable, so a reviewer carries it.
+//     - `myrepo` itself. The base name is an arbitrary example; only the
+//       separator between it and the suffix is the fact under test.
+//
+// So a green here means "the two READMEs spell the examples with today's
+// separator", never "no stale separator survives anywhere in the repo".
+const fs = require('node:fs');
+const path = require('node:path');
+
+const SEPARATOR_QUOTING_DOCS = ['README.md', 'README.ja.md'];
+
+/** Read a repo-root-relative document. */
+const readDoc = (rel) =>
+  fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+
+for (const rel of SEPARATOR_QUOTING_DOCS) {
+  test(`${rel} spells the numbered session with today's SESSION_SEPARATOR`, () => {
+    // Derived, not literal: `nextSessionName` is what actually builds the name,
+    // so the document is compared against the code path rather than against a
+    // second copy of the separator.
+    const expected = nextSessionName('myrepo', [s('myrepo')]);
+    assert.strictEqual(expected, `myrepo${SESSION_SEPARATOR}2`); // guards the guard
+    assert.ok(
+      readDoc(rel).includes(expected),
+      `${rel} must show the second session as "${expected}"`,
+    );
+  });
+
+  test(`${rel} spells the profile session with today's SESSION_SEPARATOR`, () => {
+    const expected = `myrepo${SESSION_SEPARATOR}${profileSuffix({ label: 'Claude Code' })}`;
+    assert.ok(
+      readDoc(rel).includes(expected),
+      `${rel} must show the profile session as "${expected}"`,
+    );
+  });
+}

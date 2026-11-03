@@ -55,6 +55,16 @@ import {
 } from './font-registry.js';
 import { buildFontOptions } from './font-options.js';
 import { resolveTerminalFontConfig } from './terminal-font.js';
+import {
+  TMUX_OPTIONS,
+  TMUX_OPTION_RETRY_MS,
+  classifyTmuxFailure,
+  initialTmuxOptionState,
+  nextTmuxOptionState,
+  tmuxOptionStateForAttach,
+  type TmuxOptionOutcome,
+  type TmuxOptionState,
+} from './tmux-options.js';
 
 /**
  * Background bell poll interval (ms). Design #16 recommends 2–3s; 2500ms keeps
@@ -495,10 +505,12 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
   >();
   private nextSoundId = 1;
-  // `set-option -wg monitor-bell on` is best-effort and idempotent; run it once
-  // on the first successful attach (a session — hence a tmux server — exists by
-  // then, so it can't spawn an empty server just to hold the option).
-  private monitorBellEnabled = false;
+  // The tmux options the view sets on its server (monitor-bell,
+  // allow-passthrough). An option leaves `pending` only once tmux accepted it
+  // or rejected it; "no server yet" (the first-attach race) is retried. See
+  // applyTmuxOptions and src/tmux-options.ts.
+  private tmuxOptionState: TmuxOptionState = initialTmuxOptionState();
+  private tmuxOptionTimer: ReturnType<typeof setTimeout> | undefined;
   private lastCols = 80;
   private lastRows = 24;
   /**
@@ -672,6 +684,8 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       void this.openNewSession(message.profile ? profileByLabel(message.profile) : undefined);
     } else if (message.type === 'openProfileSettings') {
       void vscode.commands.executeCommand('workbench.action.openSettings', 'tmuxOpener.profiles');
+    } else if (message.type === 'refreshSessions') {
+      this.pushSessions();
     } else if (message.type === 'killCurrentSession') {
       void this.killCurrentSession();
     } else if (message.type === 'openSettings') {
@@ -1052,24 +1066,52 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   /**
-   * Best-effort, idempotent `tmux set-option -wg monitor-bell on` so a bell in
-   * any window — existing or created later by an AI CLI — sets
-   * `window_bell_flag`, which the background poller reads (#16, design A). A
-   * *global window option*: windows leave `monitor-bell` unset locally and
-   * inherit it, so future windows follow without re-running this. Run once, on
-   * the first attach, when a tmux server is known to exist (so it can't spawn an
-   * empty one). Failure is swallowed — the front-of-house `onBell` path (a) is
-   * independent of it; only background detection (b) depends on the flag.
+   * Apply the still-pending tmux options (`TMUX_OPTIONS`): `monitor-bell` so a
+   * bell in any window sets `window_bell_flag` for the background poller (#16),
+   * and `allow-passthrough` so an application's OSC 52 wrapped in DCS
+   * passthrough (how Grok, seeing `TMUX`, sends it) reaches this view's
+   * ClipboardAddon (#311). Both are global window options (`-wg`), so windows
+   * created later inherit them; they affect every client of the server and are
+   * not written to `~/.tmux.conf`.
+   *
+   * Called right after `pty.spawn`. With no server running yet, that spawn has
+   * not brought one up when this runs and tmux answers `error connecting to …`;
+   * such an option stays pending and is retried every `TMUX_OPTION_RETRY_MS` up
+   * to `TMUX_OPTION_MAX_ATTEMPTS` attempts. An option tmux rejects (an older
+   * tmux without `allow-passthrough`) is final and logged, never marked done.
+   * It never starts a server: `set-option` without one only fails.
    */
-  private enableMonitorBell(): void {
-    if (this.monitorBellEnabled) {
-      return;
+  private applyTmuxOptions(): void {
+    if (this.tmuxOptionTimer) {
+      clearTimeout(this.tmuxOptionTimer);
+      this.tmuxOptionTimer = undefined;
     }
-    this.monitorBellEnabled = true;
-    try {
-      execFileSync('tmux', ['set-option', '-wg', 'monitor-bell', 'on'], { stdio: 'ignore' });
-    } catch {
-      // best-effort; leave background detection degraded rather than crashing.
+    const outcomes: Record<string, TmuxOptionOutcome> = {};
+    for (const key of this.tmuxOptionState.pending) {
+      const option = TMUX_OPTIONS.find((o) => o.key === key);
+      if (!option) {
+        continue;
+      }
+      try {
+        execFileSync('tmux', [...option.args], { stdio: ['ignore', 'ignore', 'pipe'] });
+        outcomes[key] = 'ok';
+      } catch (err) {
+        const stderr = String((err as { stderr?: unknown }).stderr ?? '');
+        outcomes[key] = classifyTmuxFailure(stderr);
+      }
+    }
+    const before = this.tmuxOptionState.failed;
+    this.tmuxOptionState = nextTmuxOptionState(this.tmuxOptionState, outcomes);
+    for (const [key, why] of Object.entries(this.tmuxOptionState.failed)) {
+      if (!(key in before)) {
+        console.warn(`tmux-opener: tmux option ${key} not set (${why})`);
+      }
+    }
+    if (this.tmuxOptionState.pending.length > 0) {
+      this.tmuxOptionTimer = setTimeout(() => {
+        this.tmuxOptionTimer = undefined;
+        this.applyTmuxOptions();
+      }, TMUX_OPTION_RETRY_MS);
     }
   }
 
@@ -1750,9 +1792,13 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.ptyProcess = proc;
     // A session started, so tmux is present now; let a future disappearance warn.
     this.warnedTmuxMissing = false;
-    // A tmux server exists now — enable bell monitoring so background windows
-    // set window_bell_flag for the poller to read (once; idempotent).
-    this.enableMonitorBell();
+    // Set monitor-bell / allow-passthrough on the server this client is
+    // bringing up or joining; retried while the server is not up yet. Reset on
+    // every attach: the previous server may have exited (exit-empty) and this
+    // one starts with both off. A retry timer from the last attach is stopped
+    // inside applyTmuxOptions.
+    this.tmuxOptionState = tmuxOptionStateForAttach();
+    this.applyTmuxOptions();
     // Tool-actions for the newly attached session are already sent via the
     // `pushSessions()` above (its single delivery point), so no separate
     // `pushToolActions()` is needed here — it would only re-send the same
@@ -2201,6 +2247,10 @@ class TmuxTerminalViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   dispose(): void {
+    if (this.tmuxOptionTimer) {
+      clearTimeout(this.tmuxOptionTimer);
+      this.tmuxOptionTimer = undefined;
+    }
     // Stop the background bell poller so its timer can't outlive the provider.
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
@@ -2704,6 +2754,9 @@ ${fontFaceCss}  html { height: 100%; margin: 0; padding: 0; overflow: hidden; }
   <div class="toolbar-action" id="toggleNotifySound" role="button" aria-pressed="false" title="${t('Notification sound: off')}">
     <span class="codicon codicon-bell-slash"></span>
   </div>
+  <div class="toolbar-action" id="refreshSessions" role="button" title="${t('Refresh Sessions')}">
+    <span class="codicon codicon-sync"></span>
+  </div>
   <div class="toolbar-action" id="toggleSidebar" title="${t('Toggle Session List')}">
     <span class="codicon codicon-list-selection"></span>
   </div>
@@ -2902,6 +2955,13 @@ export function activate(context: vscode.ExtensionContext): void {
     'tmux-opener.openProfileSettings',
     () => vscode.commands.executeCommand('workbench.action.openSettings', 'tmuxOpener.profiles'),
   );
+  // Re-read `tmux list-sessions` and redraw the session list. Nothing polls the
+  // session set, so a session created outside the extension (e.g. a script's
+  // `tmux new-session -d -s <base>--work-<n>`) only appears on the next
+  // pushSessions trigger — this is that trigger on demand (#313).
+  const refreshSessionsCmd = vscode.commands.registerCommand('tmux-opener.refreshSessions', () =>
+    terminalProvider.pushSessions(),
+  );
   const killCurrentCmd = vscode.commands.registerCommand('tmux-opener.killCurrentSession', () =>
     terminalProvider.killCurrentSession(),
   );
@@ -2977,6 +3037,7 @@ export function activate(context: vscode.ExtensionContext): void {
     newSessionWithProfileCmd,
     ...builtInProfileCmds,
     openProfileSettingsCmd,
+    refreshSessionsCmd,
     killCurrentCmd,
     toggleSidebarCmd,
     openSettingsCmd,

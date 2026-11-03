@@ -1,0 +1,190 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>#297 / #302 — what the fontFamily value does in a real CSS parser</title>
+<body>
+<div id="out">PENDING</div>
+<!--
+  WHY THIS IS NOT IN `npm test`: node has no CSS parser. The unit tests judge the
+  composed value with `leavesItsToken`, a predicate WE wrote; this file asks
+  Chromium instead, which is the parser that actually runs in the webview. A
+  predicate agreeing with itself proves nothing, so the two are kept separate on
+  purpose.
+
+  HOW TO RUN IT (snap-packaged Chromium cannot read /tmp, so run it from a path
+  inside $HOME or the repo):
+
+    chromium-browser --headless --disable-gpu --no-sandbox \
+      --virtual-time-budget=8000 \
+      --dump-dom "file://$PWD/test/manual/css-sink-harness.html" \
+      | grep -o 'id="out">[^<]*'
+
+  MEASURED 2026-07-28 on the fixed implementation:
+    payloads=30 rawEscapes=30 sanitizedEscapes=0
+    legitimate=15 identityBroken=0 legitInert=15
+-->
+<script src="../../media/webview-font.js"></script>
+<script>
+// xterm's `_injectCss` builds a <style> by STRING CONCATENATION around the value.
+// The rule below is xterm's OWN shape — four declarations, `font-family` first —
+// rather than a one-declaration simplification. That matters for the negative
+// control: with a trimmed-down rule two payloads happened not to disturb the
+// baseline, which read as "2 payloads are inert" when it was really "the template
+// had less to lose" (PR #304 review, Low).
+function inject(value) {
+  const style = document.createElement('style');
+  style.textContent =
+    '.xterm-rows span { font-family: ' + value +
+    '; font-size: 14px; font-kerning: none; white-space: pre}\n' +
+    '.probe-a { color: rgb(1, 2, 3); }\n' +
+    '.probe-b { color: rgb(4, 5, 6); }\n';
+  document.head.appendChild(style);
+  const sheet = style.sheet;
+  const rules = sheet ? sheet.cssRules.length : -1;
+  const decls = sheet && sheet.cssRules.length ? sheet.cssRules[0].style.length : -1;
+  const cs = getComputedStyle(document.body);
+  const seen = {
+    rules: rules,
+    decls: decls,
+    bodyBg: cs.backgroundColor,
+    bodyColor: cs.color,
+    // The selector-hijack signal: xterm's own `white-space: pre` landing on `body`
+    // means the payload closed our rule and opened one of its choosing.
+    bodyWhiteSpace: cs.whiteSpace,
+  };
+  document.head.removeChild(style);
+  return seen;
+}
+
+// THE BASELINE IS MEASURED, NOT WRITTEN DOWN. A first cut hardcoded `decls === 4`
+// by counting the declarations in the rule text — and Chromium reports 5, because
+// `white-space` expands into two longhands. Every value then looked like an escape,
+// including `monospace`, so the harness reported a catastrophe that was entirely its
+// own oracle. Taking the baseline from a value that cannot escape removes the whole
+// class of guess.
+const BASELINE = inject('monospace');
+
+// ...and the measured baseline gets a few ABSOLUTE checks of its own, because a
+// purely relative oracle has a silent failure mode the hardcoded one did not: if
+// BASELINE itself is wrong, every value "matches the baseline" and the run goes
+// quietly all-green. `monospace` cannot escape (a CSS-wide keyword with no
+// metacharacter in it) — but that is a design argument, not a measurement, so the
+// two facts that argument implies are asserted rather than assumed.
+const ORACLE_BROKEN =
+  BASELINE.rules !== 3 || BASELINE.bodyBg !== 'rgba(0, 0, 0, 0)' ||
+  BASELINE.bodyWhiteSpace !== 'normal';
+
+function isBaseline(r) {
+  return r.rules === BASELINE.rules && r.decls === BASELINE.decls &&
+    r.bodyBg === BASELINE.bodyBg && r.bodyColor === BASELINE.bodyColor &&
+    r.bodyWhiteSpace === BASELINE.bodyWhiteSpace;
+}
+
+const LF = String.fromCharCode(10);
+const CR = String.fromCharCode(13);
+const NUL = String.fromCharCode(0);
+const DEL = String.fromCharCode(127);
+const escaper = '} body{background:red} .x{';
+
+const payloads = [
+  '"A"' + escaper + '"B"',
+  "'A'" + escaper + "'B'",
+  '"A"; color: red; font-family: "B"',
+  "'A'; color: red; font-family: 'B'",
+  '"A' + escaper,
+  '"A"' + escaper + '"',
+  'A' + escaper + '"',
+  'X' + LF + escaper,
+  '"X' + LF + escaper + '"',
+  "'X" + CR + escaper + "'",
+  'X' + NUL + escaper,
+  'X' + DEL + escaper,
+  '"A"/*',
+  'A/*',
+  '"A": url(x',
+  '"A"{',
+  'a)b(',
+  'X\\',
+  '"X\\"',
+  'Menlo\\',
+  '"A\\"' + escaper + '"B"',
+  '"A"' + escaper + '"B", monospace',
+  'Menlo, "A"' + escaper + '"B"',
+  'var(--x, "A"' + escaper + '"B")',
+  'var(--x) } body{background:red} .y{ var(--z)',
+  '"A" ' + escaper + ' "B"',
+  // Axis D against a WIDENED identifier class: `}` beside characters that are
+  // themselves ident code points. Every escaper above carries `.` and `:`, which no
+  // version of the class accepted — so none of them could probe the class that grew,
+  // and all four of these passed through byte-for-byte on the broken one.
+  'A} x{',
+  'Menlo} body{',
+  'Menlo, A} y{',
+  'var(--x, A} y{)',
+];
+
+// Values that must survive untouched AND stay inert.
+const legitimate = [
+  'var(--vscode-editor-font-family, Menlo, Monaco, "Courier New", monospace)',
+  'var(--vscode-editor-font-family)',
+  '"M PLUS 1 Code Term", monospace',
+  '"Mgen+ 1mn Term", monospace',
+  '"ShirokumaGen Term", monospace',
+  '"Mgen+ 1mn", monospace',
+  'monospace',
+  'Menlo, Monaco, monospace',
+  'Courier New, monospace',
+  "'Courier New', monospace",
+  '"A" ,   B ,monospace',
+  'メイリオ, monospace',
+  '한컴돋움, monospace',
+  'VAR(--vscode-editor-font-family, monospace)',
+  'var(--x,)',
+];
+
+const lines = [];
+let rawEscapes = 0;
+let sanitizedEscapes = 0;
+
+for (const p of payloads) {
+  if (!isBaseline(inject(p))) rawEscapes += 1;
+  else lines.push('INERT-EVEN-RAW ' + JSON.stringify(p));
+  const safe = inject(TmuxFont.sanitizeFontStack(p));
+  if (!isBaseline(safe)) {
+    sanitizedEscapes += 1;
+    lines.push('ESCAPED-AFTER-SANITIZE ' + JSON.stringify(p) + ' -> ' + JSON.stringify(safe));
+  }
+}
+
+let identityBroken = 0;
+let legitInert = 0;
+for (const v of legitimate) {
+  const out = TmuxFont.sanitizeFontStack(v);
+  if (out !== v) {
+    identityBroken += 1;
+    lines.push('NOT-IDENTICAL ' + JSON.stringify(v) + ' -> ' + JSON.stringify(out));
+  }
+  // Inject what sanitizeFontStack RETURNED, not the input. Injecting the input made
+  // `legitInert` mean "this value was harmless to begin with", which only coincided
+  // with "harmless after sanitizing" because identityBroken was 0 — two claims
+  // propping each other up. Injecting the output keeps the number meaningful on the
+  // day identity does break.
+  if (isBaseline(inject(out))) legitInert += 1;
+  else lines.push('LEGIT-NOT-INERT ' + JSON.stringify(v));
+}
+
+if (ORACLE_BROKEN) {
+  lines.unshift('HARNESS-ORACLE-BROKEN baseline=' + JSON.stringify(BASELINE) +
+    ' — every number below is meaningless');
+}
+
+lines.unshift(
+  'payloads=' + payloads.length +
+  ' rawEscapes=' + rawEscapes +
+  ' sanitizedEscapes=' + sanitizedEscapes +
+  ' legitimate=' + legitimate.length +
+  ' identityBroken=' + identityBroken +
+  ' legitInert=' + legitInert,
+);
+document.getElementById('out').textContent = lines.join(' | ');
+</script>
+</body>

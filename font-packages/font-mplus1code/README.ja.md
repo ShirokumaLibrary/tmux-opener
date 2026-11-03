@@ -57,7 +57,8 @@ box drawing / block / 私用領域も同様——正確な対象範囲は `font-
 可変フォントの輪郭を編集すると `gvar` のデルタが壊れるので、変換は先にインスタンスを固定する
 必要がある。400 と 700 の 2 点で固定してそれぞれを変換した —— 契約が `100 700` 軸を名乗る
 1 face ではなく単一値 weight の 2 face になっているのはそのため。静的 face が範囲を宣言するのは
-`font-packages/README.md` が説明する「合成 bold 抑止の罠」そのもので、CSS の font matching が
+`font-packages/README.ja.md`(規範の正は英語版 `font-packages/README.md`)が説明する
+「合成 bold 抑止の罠」そのもので、CSS の font matching が
 レギュラー face を bold セルの実体として選び、レギュラーの太さで描いてしまう。分割の利点は、
 bold が合成ではなく実バイトになったことである。
 
@@ -94,7 +95,8 @@ editor.fontFamily」と明言しているのはこのため)。
 ファイル配置・ID・契約フィールドを変更すると、消費側は無言で壊れる。
 
 **契約仕様——2 つの宣言形・読み手の正規化規則・縮退規則・コード付きの消費側手順——は
-同じリポジトリの `font-packages/README.md` が単一正本。本節はこの package が何を宣言して
+同じリポジトリの `font-packages/README.ja.md`(規範の正は英語版
+`font-packages/README.md`)が単一正本。本節はこの package が何を宣言して
 いるかだけを記録する。**
 
 この拡張機能の `providedFont`:
@@ -382,6 +384,7 @@ tmux-opener は旧名を alias として登録し、alias 名義の `@font-face`
 繰り返しになるが、VS Code に拡張機能間でフォントを共有する **公式の仕組みは存在しない**。
 借用手順は、供給側(この拡張機能)と消費側(tmux-opener 等)の間で取り決めた
 非公式の自前規約であり、`providedFont` 契約フィールドがその取り決めの正本
-(規約そのものの記述の正本は `font-packages/README.md`)。契約フィールドの形や
+(規約そのものの記述の正本は `font-packages/README.ja.md`。規範の正は英語版
+`font-packages/README.md`)。契約フィールドの形や
 フォントファイルの配置を変更する場合は、消費側が無言で壊れることを踏まえ、双方を揃えて
 更新すること。

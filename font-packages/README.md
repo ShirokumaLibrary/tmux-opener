@@ -7,6 +7,17 @@ documents the facts about **its own font** (which faces it ships, where the byte
 came from, what the family name measures as); the contract *format*, the reader's
 normalization and the degradation rules are described here and nowhere else.
 
+**English is normative.** `font-packages/README.ja.md` beside this file is a
+Japanese translation of the seven specification sections below — the preamble
+through "Conventions for the packages in this directory", as far as the two
+provenance regimes — and where the two disagree, **this file wins**. The
+translation deliberately stops there: the link-by-link provenance detail, the
+Reserved Font Name check, the VSIX packaging check, the terminal width
+conventions and the machine-check inventory are measured tables and file-path
+lists, and a second copy of a measured value is exactly the drift a single canon
+exists to prevent. Those sections appear in the translation as headings that
+point back here.
+
 Why here: `font-packages/` is not `export-ignore`d, so this document reaches the
 public repository and any third-party consumer; and it is **not bundled into any
 VSIX** — a font extension is packaged from *its own* directory, and the
@@ -1533,6 +1544,17 @@ In tmux-opener's repository root, run by `npm test`:
   font file and its provenance record can only move in the same commit. It also
   matches the fixed `## Provenance (upstream archive → conversion → output)`
   heading, which is why that string is not free to be reworded on its own.
+- `test/font-readme-i18n.test.js` (from #303) — this file against
+  `font-packages/README.ja.md`: the section headings paired by position through
+  an explicit table checked in **three** directions (the table's English column
+  ≡ this file's real headings, its Japanese column ≡ the translation's, and the
+  order), every code fence in a translated section byte-identical, and every
+  inline-code identifier and `#nnn` issue reference carried over. Headings are
+  read only after code fences are stripped — the `## Provenance …` sample above
+  is a fence in both files and a heading in neither, and counting it would be a
+  check measuring something other than what it claims to. **Prose is not bound
+  at all**: a fluent mistranslation of a whole paragraph is green, and so is a
+  normative English paragraph added with no identifier in it.
 
 Green means no declared string has drifted, no install state resolves the wrong
 extension, and — from #276 — no converted byte has moved away from its record.

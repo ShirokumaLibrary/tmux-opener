@@ -19,9 +19,12 @@ detached, reattached, or reopened after a window reload.
 Open the **Tmux** view from the Secondary Side Bar (the right-hand panel).
 
 - The toolbar at the top shows the current session name, a `+ ⌄` button to
-  create sessions, and actions to toggle the notification sound
-  (`tmuxOpener.notifySound`), show/hide the session list, kill the current
-  session, and open settings.
+  create sessions, and actions for the session — among them toggling the
+  notification sound (`tmuxOpener.notifySound`), showing/hiding the session
+  list, killing the current session, and opening settings. Some actions appear
+  only when they apply: **Restart** shows up for a session started
+  from a profile's command, and **Update** additionally needs that tool to
+  declare an update command. A second row carries the font pickers.
 - The session list on the right works like VS Code's terminal tabs: click a
   session to switch to it, click **×** (or middle-click) to kill it, drag its
   edge to resize.
@@ -30,8 +33,12 @@ Open the **Tmux** view from the Secondary Side Bar (the right-hand panel).
 - Opening the view attaches to the topmost session. Killing a session — or
   quitting it with `exit` — moves you to the next one.
 - `Ctrl`/`Cmd`+`F` opens a find bar. URLs in the output are clickable.
-- Copying works from tmux's own copy-mode (via OSC 52), and from a terminal
-  selection made with `Shift`+drag or `Option`+drag. `Ctrl`/`Cmd`+`C` copies
+- Copying works from tmux's own copy-mode (via OSC 52), from a program in the
+  pane that sends OSC 52 through tmux's passthrough (such as Grok Build), and
+  from a terminal selection made with `Shift`+drag or `Option`+drag. For the
+  second, the view sets `allow-passthrough on` on the tmux server it attaches
+  to (every client of that server sees it; nothing is written to
+  `~/.tmux.conf`). This view never answers a program's request to read the clipboard. tmux does not answer a wrapped read request either: it forwards it to every terminal attached to that server, so if another, native terminal is attached to the same server, whether it answers depends on that terminal's settings. `Ctrl`/`Cmd`+`C` copies
   when text is selected, and passes through as `SIGINT` when it isn't.
 
 The same actions are in the Command Palette under **Tmux:**.
@@ -54,16 +61,23 @@ to hide one, or add your own key to define a new one.
 }
 ```
 
-Sessions are named after the workspace folder: `myrepo`, then `myrepo-2`,
-`myrepo-3`… Profile sessions get their own name (`myrepo-claude-code`), so they
-never take a number in that sequence.
+Sessions are named after the workspace folder: `myrepo`, then `myrepo--2`,
+`myrepo--3`… Profile sessions get their own name (`myrepo--claude-code`), so
+they never take a number in that sequence.
+
+The separator is a **doubled** dash. A workspace name is folded to a single
+dash first (every run of `-` collapses to one), so a base name can never
+contain `--` — which is what keeps a workspace literally called `myrepo-2`
+from colliding with `myrepo`'s second session.
 
 A profile whose command isn't on your `PATH` is marked in the dropdown but stays
 selectable — the login shell tmux starts may resolve it differently.
 
 ## Notifications
 
-The view watches every session for the terminal bell (BEL, `\a`). When one
+The view watches this workspace's sessions for the terminal bell (BEL, `\a`) —
+the one named after the folder and everything under its `--` namespace, so a
+tmux session belonging to some other project never notifies you here. When one
 rings, it raises a native VS Code notification naming that session — so you
 can leave an AI CLI running in the background and find out the moment it needs
 you or finishes. Click **Open** on the notification to jump to that session.
@@ -585,9 +599,9 @@ This is setup C, and it has two sources to shut off, not one:
 
 | Setting | Description |
 | --- | --- |
-| `tmuxOpener.terminal.fontFamily` | Terminal font. Follows `editor.fontFamily` when empty. |
+| `tmuxOpener.terminal.fontFamily` | Terminal font. Empty (the default) falls back to `terminal.integrated.fontFamily`, and to `Menlo, Monaco, "Courier New", monospace` when that is unset too. The editor's font is deliberately not inherited — it may be proportional or serif. |
 | `tmuxOpener.terminal.fontFallback` | Second font family, used only for characters the terminal font has no glyph for. Empty (the default) means none, and nothing changes. |
-| `tmuxOpener.terminal.fontSize` | Terminal font size. Follows `editor.fontSize` when unset. |
+| `tmuxOpener.terminal.fontSize` | Terminal font size. Unset (the default) falls back to `terminal.integrated.fontSize`, then to `editor.fontSize` — each only if you set it explicitly — and to `14` otherwise. |
 | `tmuxOpener.profiles` | Commands offered by the `⌄` dropdown. |
 | `tmuxOpener.notifyOnBell` | Notify when a session rings the terminal bell. On by default. |
 | `tmuxOpener.notifySound` | Play a sound with the bell notification. On by default. |

@@ -348,6 +348,187 @@
   }
 
   /**
+   * The whole font-family value split on its TOP-LEVEL commas — the plural of
+   * `firstTopLevelComma`, sharing its scanner and therefore its understanding that
+   * a comma inside quotes or inside `var()`'s argument is not a separator.
+   *
+   * `firstTopLevelComma` stays: `buildFontStack` needs the INDEX to splice at, not
+   * the pieces, and rebuilding the string from pieces would lose the caller's
+   * spacing (`"A" ,   B` → `"A", B`), which #302 must not do.
+   */
+  function splitTopLevel(value) {
+    const out = [];
+    let start = 0;
+    let depth = 0;
+    let quote = null;
+    for (let i = 0; i < value.length; i += 1) {
+      const ch = value.charAt(i);
+      if (quote !== null) {
+        if (ch === quote) {
+          quote = null;
+        }
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '(') {
+        depth += 1;
+      } else if (ch === ')') {
+        depth = depth > 0 ? depth - 1 : 0;
+      } else if (ch === ',' && depth === 0) {
+        out.push(value.slice(start, i));
+        start = i + 1;
+      }
+    }
+    out.push(value.slice(start));
+    return out;
+  }
+
+  // A CSS identifier. NON-ASCII IS INCLUDED ON PURPOSE: css-syntax-3 counts every
+  // code point U+0080 and above as an ident code point, so `メイリオ` and `한컴돋움`
+  // are unquoted family names a settings.json may legitimately hold — and an
+  // ASCII-only class would quote them, which is the very "silently rewrites a value
+  // nobody asked to change" this function exists to avoid. (An extension that bundles
+  // Japanese fonts getting this wrong was found in review, not by us.) Letting them
+  // through costs nothing at the sink: no code point above U+007F can end a CSS
+  // string or a declaration, so none of them can leave the font stack.
+  //
+  // THE `\-` IS LOAD-BEARING. The first cut wrote the hyphen unescaped, right before
+  // the high endpoint — `[A-Za-z_-<U+FFFF>-]` — and JS read `_-<U+FFFF>` as a RANGE
+  // from U+005F, so `` ` `` `{` `|` `}` `~` all became ident characters and
+  // `A} body{` passed through untouched. The sanitizer was a no-op for the simplest
+  // possible escape and every gate stayed green (found in review, not by us).
+  // Escaping the literal hyphen is what keeps it a MEMBER of the class instead of
+  // the start of a range.
+  const IDENTIFIER = /^[A-Za-z_\-\u0080-\uFFFF][A-Za-z0-9_\-\u0080-\uFFFF]*$/;
+
+  /**
+   * Is this ONE token of a font-family list a single closed CSS token — a `<string>`,
+   * a run of identifiers, or a `var()` whose fallback argument is itself a list of
+   * such tokens?
+   *
+   * This is a WHITELIST, which is what makes it sound: anything it does not
+   * recognise is unsafe by default, so a shape nobody anticipated cannot pass by
+   * omission. (`leavesItsToken` in the test suite is the mirror-image denylist —
+   * useful there because a denylist names the reason a payload escaped, which is
+   * what an assertion message needs.)
+   *
+   * Backslashes and C0/DEL are assumed already deleted by the caller — a backslash
+   * could escape the closing quote and make "ends with the same quote" a lie.
+   */
+  function tokenIsClosed(token) {
+    const trimmed = token.trim();
+    if (trimmed.length === 0) {
+      return false;
+    }
+    const first = trimmed.charAt(0);
+    if (first === '"' || first === "'") {
+      return (
+        trimmed.length >= 2 &&
+        trimmed.charAt(trimmed.length - 1) === first &&
+        trimmed.slice(1, -1).indexOf(first) === -1
+      );
+    }
+    // An unquoted family name is a RUN of identifiers (`Courier New`). Split on the
+    // whitespace and test each part with `IDENTIFIER`, rather than nesting a
+    // quantifier inside another
+    // (`(?:\s+ident)*`) — that shape is what `security/detect-unsafe-regex` flags, and
+    //
+    // NOTE: `IDENTIFIER` and `quoteFamilyName`'s own identifier test are NO LONGER the
+    // same pattern. This one accepts non-ASCII (#304 review); that one stays ASCII, so
+    // `fontFallback: メイリオ` is still quoted into `"メイリオ"`. Harmless (the quoted
+    // form is correct CSS) but it is the same "rewrites a value nobody asked to
+    // change" this function was written to stop, left standing on the #290 side.
+    // a security fix that ships a new ReDoS warning is not one worth having. Splitting
+    // is linear in the input and needs no reasoning about backtracking.
+    if (IDENTIFIER.test(trimmed)) {
+      return true;
+    }
+    if (trimmed.indexOf(' ') !== -1 || trimmed.indexOf('\t') !== -1) {
+      const parts = trimmed.split(/[ \t]+/);
+      if (parts.every((part) => IDENTIFIER.test(part))) {
+        return true;
+      }
+    }
+    // `var(--custom-property)` / `var(--custom-property, <font stack>)`. The webview's
+    // own DEFAULT_FONT_FAMILY is exactly this shape, so refusing it would replace the
+    // user's default font rather than protect it. Matched by slicing rather than by
+    // one regex, for the same ReDoS reason as above.
+    // `toLowerCase` because a CSS function name is ASCII case-insensitive: `VAR(--x)`
+    // is the same function as `var(--x)`, and a case-sensitive test would quote a
+    // legitimate value (found in review).
+    if (
+      trimmed.slice(0, 4).toLowerCase() === 'var(' &&
+      trimmed.charAt(trimmed.length - 1) === ')'
+    ) {
+      const inner = trimmed.slice(4, -1);
+      // A custom-property name holds no comma, so the FIRST comma is the argument
+      // separator — no top-level scan needed to find it.
+      const comma = inner.indexOf(',');
+      const name = (comma === -1 ? inner : inner.slice(0, comma)).trim();
+      if (!/^--[A-Za-z0-9_-]+$/.test(name)) {
+        return false;
+      }
+      if (comma === -1) {
+        return true;
+      }
+      // `var(--x,)` and `var(--x, )` declare an EMPTY fallback, which css-variables-1
+      // allows — and which the recursion below would reject, because an empty token is
+      // not a closed one. Answer it here rather than weakening `tokenIsClosed`'s empty
+      // case, which is what stops `"A",,"B"` from passing.
+      if (inner.slice(comma + 1).trim().length === 0) {
+        return true;
+      }
+      // The fallback argument is a font stack in its own right; recurse rather than
+      // inventing a second grammar for it. A token carrying a stray `)` — which is how
+      // an attacker would try to end the var() early — fails every branch here, so the
+      // `endsWith(')')` anchor cannot be used to smuggle CSS past it.
+      return splitTopLevel(inner.slice(comma + 1)).every(tokenIsClosed);
+    }
+    return false;
+  }
+
+  /**
+   * The primary `tmuxOpener.terminal.fontFamily` value, made safe to concatenate into
+   * xterm's `<style>` (`_injectCss`) — the sink #290 closed for the FALLBACK token and
+   * left open for this one (#297).
+   *
+   * VALIDATE-AND-PASSTHROUGH, not sanitize-and-rebuild. When every token is already
+   * closed the input is returned unchanged, so the user's own spacing survives —
+   * splitting and rejoining would rewrite `"A" ,   B` into `"A", B`, a change to a
+   * value nobody asked to change, and the one thing #302 must not do is disturb a
+   * working settings.json.
+   *
+   * WHAT ROUND-TRIPS IS A MEASURED SET, NOT "everything legitimate" — an earlier
+   * revision of this comment claimed the latter and review produced counterexamples
+   * within minutes. A token is preserved when it is a closed `<string>`, a run of CSS
+   * identifiers (non-ASCII included), or a well-formed `var()`. Outside that:
+   *
+   *   - `Mgen+ 1mn` unquoted → `"Mgen+ 1mn"`. `+` is no ident code point, so this was
+   *     never valid CSS; quoting is a repair.
+   *   - a token CSS would accept through some construct this whitelist does not model
+   *     is quoted too. That is the deliberate cost of a whitelist, and it is safe
+   *     (worst case a family name stops resolving) rather than the reverse.
+   *
+   * THE REPAIR IS PER TOKEN. A stack is not quoted wholesale because one token in it
+   * is bad: `var(--vscode-editor-font-family, …), <bad>` must keep its `var()`, or the
+   * repair itself deletes the user's default font — the exact failure this function's
+   * design was chosen to avoid.
+   */
+  function sanitizeFontStack(value) {
+    if (typeof value !== 'string' || value.length === 0) {
+      return value;
+    }
+    // eslint-disable-next-line no-control-regex -- deleting C0/DEL is the point
+    const stripped = value.replace(/[\\\u0000-\u001f\u007f]/g, "");
+    const tokens = splitTopLevel(stripped);
+    if (tokens.every(tokenIsClosed)) {
+      return stripped;
+    }
+    return tokens
+      .map((token) => (tokenIsClosed(token) ? token.trim() : quoteFamilyName(token)))
+      .join(', ');
+  }
+
+  /**
    * A family name as it must appear inside a CSS font-family list: already-quoted
    * input is passed through, a bare CSS identifier (`Menlo`, `monospace`) is left
    * unquoted so a generic keyword keeps its meaning, and everything else — any
@@ -400,10 +581,13 @@
    * font-family value: `""` stays `""`, and Chromium simply drops such a
    * declaration. Nor is it a claim about the primary — see SCOPE below.
    *
-   * SCOPE: this sanitizes the FALLBACK token only — the one value `buildFontStack`
-   * passes through here. The primary `family` string is spliced in untouched, so
-   * `tmuxOpener.terminal.fontFamily` keeps reaching the same sink raw, exactly as it
-   * did before #290. Narrowing that one is a separate change.
+   * SCOPE: this narrows the FALLBACK token only — the one value `buildFontStack`
+   * passes through here. The primary `family` is narrowed by `sanitizeFontStack`
+   * instead (#297), at `fontStackForXterm` in media/webview-terminal.js, BEFORE
+   * `buildFontStack` is called. The two are deliberately different functions: a
+   * fallback is one family name, while the primary is a whole stack that may hold
+   * `var()` and several comma-separated tokens, so quoting it as one name would
+   * turn the webview's own default into a string and lose the user's font.
    *
    * Deleting the control characters (rather than replacing them) is the discipline
    * the statusline already uses for externally-controlled values: dropping only
@@ -507,5 +691,6 @@
     fontFamilyChipText,
     fontSizeChipText,
     buildFontStack,
+    sanitizeFontStack,
   };
 });

@@ -25,6 +25,7 @@
   "Updating {0} failed (exit code {1}).": "{0} の更新に失敗しました（終了コード {1}）。",
   "Tmux Opener: a session named \"{0}\" already exists; close it before updating.": "Tmux Opener: 「{0}」という名前のセッションが既に存在します。更新する前に終了してください。",
   "Tmux Opener: switched away from \"{0}\"; not restarting.": "Tmux Opener: 「{0}」から移動したため、再起動しません。",
+  "Refresh Sessions": "セッション一覧を再読み込みする",
   "Kill Current Session": "現在のセッションを終了する",
   "Kill session": "セッションを終了",
   "Session \"{0}\" killed.": "セッション「{0}」を終了しました。",

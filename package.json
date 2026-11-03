@@ -3,7 +3,7 @@
   "displayName": "Tmux Opener",
   "description": "%extension.description%",
   "l10n": "./l10n",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "shirokuma-library",
   "license": "MIT",
   "repository": {
@@ -68,6 +68,11 @@
       {
         "command": "tmux-opener.openProfileSettings",
         "title": "%command.openProfileSettings%",
+        "category": "Tmux"
+      },
+      {
+        "command": "tmux-opener.refreshSessions",
+        "title": "%command.refreshSessions%",
         "category": "Tmux"
       },
       {
